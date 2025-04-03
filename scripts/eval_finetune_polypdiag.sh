@@ -1,9 +1,11 @@
 #!/bin/bash
 
-EXP_NAME="polypdiag_finetune"
+# training scripts
+EXP_NAME="duk-gss-split-5_finetune"
 DATASET="ucf101"
-DATA_PATH="data/downstream/PolypDiag"
-CHECKPOINT="checkpoints/endo_fm.pth"
+DATA_PATH="data/downstream/duhs-gss-split-5:v0"
+# CHECKPOINT="checkpoints/endo_fm.pth"
+CHECKPOINT="checkpoints/polypdiag.pth"
 
 
 if [ ! -d "checkpoints/$EXP_NAME" ]; then
@@ -14,11 +16,11 @@ fi
 python -m torch.distributed.launch \
   --nproc_per_node=1 \
   --master_port="$RANDOM" \
-  eval_finetune.py \
+  eval_finetune_new.py \
   --n_last_blocks 1 \
   --arch "vit_base" \
   --pretrained_weights "$CHECKPOINT" \
-  --epochs 20 \
+  --epochs 30 \
   --lr 0.001 \
   --batch_size_per_gpu 4 \
   --num_workers 4 \

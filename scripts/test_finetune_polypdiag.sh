@@ -3,9 +3,9 @@
 EXP_NAME="polypdiag_finetune"
 DATASET="ucf101"
 DATA_PATH="data/downstream/PolypDiag"
-CHECKPOINT="checkpoints/endo_fm.pth"
-
-
+# CHECKPOINT="checkpoints/endo_fm.pth"
+# CHECKPOINT="checkpoints/eval/polypdiag_finetune/checkpoint.pth.tar"
+CHECKPOINT="checkpoints/polypdiag.pth"
 if [ ! -d "checkpoints/$EXP_NAME" ]; then
   mkdir "checkpoints/$EXP_NAME"
 fi
