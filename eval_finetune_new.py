@@ -9,6 +9,8 @@ from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import logging
+import random
 
 from sklearn.metrics import f1_score, roc_auc_score, precision_recall_curve, auc, confusion_matrix, average_precision_score
 
@@ -17,30 +19,99 @@ from models import get_vit_base_patch16_224, get_aux_token_vit, SwinTransformer3
 from utils import utils
 from utils.meters import TestMeter
 from utils.parser import load_config
-
+from utils.focal_loss import FocalLoss  # Import the FocalLoss class
+from utils.custom_sampling import set_all_random_seeds, FrameSampler  # Import sampling utilities
+def save_all_sampling_indices(datasets, output_dir):
+    """Save sampling indices for all datasets."""
+    for split, dataset in datasets.items():
+        if hasattr(dataset, 'save_sampling_indices'):
+            try:
+                dataset.save_sampling_indices()
+                print(f"Saved sampling indices for {split} dataset")
+            except Exception as e:
+                print(f"Error saving sampling indices for {split} dataset: {str(e)}")
 
 def eval_finetune(args):
+    # Set seed for complete reproducibility
+    set_all_random_seeds(42)
+    print("Set all random seeds to 42 for reproducibility")
+    
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
-    cudnn.benchmark = True
+    cudnn.benchmark = False  # Ensure deterministic behavior
+    cudnn.deterministic = True  # Ensure deterministic behavior
     os.makedirs(args.output_dir, exist_ok=True)
     json.dump(vars(args), open(f"{args.output_dir}/config.json", "w"), indent=4)
+
+    # Create directory for sampling indices CSVs
+    sampling_csv_dir = os.path.join(args.output_dir, 'sampling_indices')
+    os.makedirs(sampling_csv_dir, exist_ok=True)
+    
+    # Configure logger
+    log_file = os.path.join(args.output_dir, 'training.log')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger('endo_fm')
+    logger.info("Starting training with seed 42 for reproducible sampling")
 
     # ============ preparing data ... ============
     config = load_config(args)
     config.TEST.NUM_SPATIAL_CROPS = 1
+    
+    # Add sampling method to config
+    config.DATA.TRAIN_SAMPLING_METHOD = args.train_sampling
+    config.DATA.VAL_SAMPLING_METHOD = args.val_sampling  
+    config.DATA.TEST_SAMPLING_METHOD = args.test_sampling
+    config.DATA.NUM_FRAMES = args.num_frames
+    config.DATA.SEED = 42  # Fixed seed for reproducibility
+    config.DATA.CSV_SAVE_DIR = sampling_csv_dir
+    global_logger = logger
+    
+    datasets = {}
+    
     if args.dataset == "ucf101":
+        # Initialize with sampling tracker
         dataset_train = UCF101(cfg=config, mode="train", num_retries=10)
+        if hasattr(dataset_train, 'init_sampler'):
+            dataset_train.init_sampler(sampling_csv_dir, global_logger, "ucf101", "train", args.train_sampling)
+        datasets['train'] = dataset_train
+            
         dataset_val = UCF101(cfg=config, mode="val", num_retries=10)
+        if hasattr(dataset_val, 'init_sampler'):
+            dataset_val.init_sampler(sampling_csv_dir, global_logger, "ucf101", "val", args.val_sampling)
+        datasets['val'] = dataset_val
+            
         config.TEST.NUM_SPATIAL_CROPS = 3
     elif args.dataset == "hmdb51":
         dataset_train = HMDB51(cfg=config, mode="train", num_retries=10)
+        if hasattr(dataset_train, 'init_sampler'):
+            dataset_train.init_sampler(sampling_csv_dir, global_logger, "hmdb51", "train", args.train_sampling)
+        datasets['train'] = dataset_train
+            
         dataset_val = HMDB51(cfg=config, mode="val", num_retries=10)
+        if hasattr(dataset_val, 'init_sampler'):
+            dataset_val.init_sampler(sampling_csv_dir, global_logger, "hmdb51", "val", args.val_sampling)
+        datasets['val'] = dataset_val
+            
         config.TEST.NUM_SPATIAL_CROPS = 3
     elif args.dataset == "kinetics400":
         dataset_train = Kinetics(cfg=config, mode="train", num_retries=10)
+        if hasattr(dataset_train, 'init_sampler'):
+            dataset_train.init_sampler(sampling_csv_dir, global_logger, "kinetics400", "train", args.train_sampling)
+        datasets['train'] = dataset_train
+            
         dataset_val = Kinetics(cfg=config, mode="val", num_retries=10)
+        if hasattr(dataset_val, 'init_sampler'):
+            dataset_val.init_sampler(sampling_csv_dir, global_logger, "kinetics400", "val", args.val_sampling)
+        datasets['val'] = dataset_val
+            
         config.TEST.NUM_SPATIAL_CROPS = 3
     else:
         raise NotImplementedError(f"invalid dataset: {args.dataset}")
@@ -62,6 +133,10 @@ def eval_finetune(args):
     )
 
     print(f"Data loaded with {len(dataset_train)} train and {len(dataset_val)} val imgs.")
+    print(f"Using sampling methods: Train={args.train_sampling}, Val={args.val_sampling}, Test={args.test_sampling}")
+
+    # Save sampling indices after initial data loading
+    save_all_sampling_indices(datasets, args.output_dir)
 
     # ============ building network ... ============
     if config.DATA.USE_FLOW or config.MODEL.TWO_TOKEN:
@@ -85,10 +160,48 @@ def eval_finetune(args):
         msg = model.load_state_dict(renamed_checkpoint, strict=False)
         print(f"Loaded model with msg: {msg}")
     elif args.scratch:
-        ckpt = torch.load('kinetics400_vitb_ssl.pth', map_location='cpu')
+        # Load the checkpoint for inspection before applying it to the model
+        ckpt = torch.load(args.pretrained_weights, map_location='cpu')
         if "teacher" in ckpt:
             ckpt = ckpt["teacher"]
+
+        # Create renamed checkpoint
         renamed_checkpoint = {x[len("backbone."):]: y for x, y in ckpt.items() if x.startswith("backbone.")}
+
+        # Check for time_embed size mismatch and adapt if necessary
+        if 'time_embed' in renamed_checkpoint:
+            pretrained_time_embed = renamed_checkpoint['time_embed']
+            current_time_frames = args.num_frames
+            pretrained_time_frames = pretrained_time_embed.shape[1]
+            
+            if current_time_frames != pretrained_time_frames:
+                print(f"Adapting time_embed from {pretrained_time_frames} frames to {current_time_frames} frames")
+                
+                # Handle time embedding mismatch
+                if current_time_frames > pretrained_time_frames:
+                    # Expand by repeating the pattern and interpolating
+                    channels = pretrained_time_embed.shape[2]
+                    expanded_time_embed = torch.zeros((1, current_time_frames, channels))
+                    
+                    # Linear interpolation of time embeddings to new size
+                    for c in range(channels):
+                        # Extract 1D signal for this channel
+                        signal = pretrained_time_embed[0, :, c].numpy()
+                        # Create interpolator
+                        from scipy import interpolate
+                        x_original = np.linspace(0, 1, pretrained_time_frames)
+                        x_new = np.linspace(0, 1, current_time_frames)
+                        f = interpolate.interp1d(x_original, signal, kind='linear')
+                        # Interpolate to get new signal
+                        new_signal = f(x_new)
+                        # Store in expanded tensor
+                        expanded_time_embed[0, :, c] = torch.tensor(new_signal)
+                    
+                    # Replace with expanded version
+                    renamed_checkpoint['time_embed'] = expanded_time_embed
+                    print(f"Expanded time_embed to {expanded_time_embed.shape}")
+
+        # Now load the model with the potentially modified checkpoint
         msg = model.load_state_dict(renamed_checkpoint, strict=False)
         print(f"Loaded model with msg: {msg}")
 
@@ -129,11 +242,14 @@ def eval_finetune(args):
         plt.savefig(os.path.join(args.output_dir, 'confusion_matrix.png'))
         print(f"Confusion matrix saved to {os.path.join(args.output_dir, 'confusion_matrix.png')}")
         
+        # Save final sampling indices
+        save_all_sampling_indices(datasets, args.output_dir)
+        
         exit(0)
 
     scaled_lr = args.lr * (args.batch_size_per_gpu * utils.get_world_size()) / 256.
 
-    # set optimizer
+    # Set optimizer
     optimizer = torch.optim.SGD(
         [{'params': model.parameters(), 'lr': scaled_lr},
          {'params': linear_classifier.parameters(), 'lr': scaled_lr}],
@@ -141,6 +257,14 @@ def eval_finetune(args):
         weight_decay=0,  # we do not apply weight decay
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=0)
+
+    # Setup loss function based on arguments (cross-entropy or focal loss)
+    if args.loss_function == 'focal_loss':
+        criterion = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
+        print(f"Using Focal Loss with alpha={args.focal_alpha}, gamma={args.focal_gamma}")
+    else:
+        criterion = nn.CrossEntropyLoss()
+        print("Using standard CrossEntropyLoss")
 
     # Optionally resume from a checkpoint
     to_restore = {"epoch": 0, "best_acc": 0., "best_f1": 0., "best_auroc": 0., "best_auprc": 0.}
@@ -160,7 +284,7 @@ def eval_finetune(args):
     for epoch in range(start_epoch, args.epochs):
         train_loader.sampler.set_epoch(epoch)
 
-        train_stats = train(args, model, linear_classifier, optimizer, train_loader, epoch, args.n_last_blocks, args.avgpool_patchtokens)
+        train_stats = train(args, model, linear_classifier, criterion, optimizer, train_loader, epoch, args.n_last_blocks, args.avgpool_patchtokens)
         scheduler.step()
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()}, 'epoch': epoch}
@@ -187,7 +311,16 @@ def eval_finetune(args):
                     "best_f1": metrics['f1'],
                     "best_auroc": max(best_auroc, metrics['auroc']),
                     "best_auprc": max(best_auprc, metrics['auprc']),
+                    "train_sampling": args.train_sampling,  # Save sampling method used
+                    "val_sampling": args.val_sampling,
+                    "test_sampling": args.test_sampling,
+                    "loss_function": args.loss_function,  # Save loss function used
+                    "seed": 42,  # Save the seed used
                 }
+                if args.loss_function == 'focal_loss':
+                    save_dict["focal_alpha"] = args.focal_alpha
+                    save_dict["focal_gamma"] = args.focal_gamma
+                
                 torch.save(save_dict, os.path.join(args.output_dir, "checkpoint.pth.tar"))
                 
                 # Plot and save confusion matrix for best model
@@ -213,6 +346,9 @@ def eval_finetune(args):
             print(f'F1: {best_f1 * 100:.1f}%')
             print(f'AUROC: {best_auroc * 100:.1f}%')
             print(f'AUPRC: {best_auprc * 100:.1f}%')
+            
+            # Save updated sampling indices after each validation
+            save_all_sampling_indices(datasets, args.output_dir)
 
     # After all epochs, load the best model and generate final metrics and confusion matrix
     if not args.test and utils.is_main_process():
@@ -239,9 +375,12 @@ def eval_finetune(args):
         plt.xlabel('Predicted Label')
         plt.savefig(os.path.join(args.output_dir, 'final_confusion_matrix.png'))
         print(f"Final confusion matrix saved to {os.path.join(args.output_dir, 'final_confusion_matrix.png')}")
+        
+        # Save final sampling indices
+        save_all_sampling_indices(datasets, args.output_dir)
 
 
-def train(args, model, linear_classifier, optimizer, loader, epoch, n, avgpool):
+def train(args, model, linear_classifier, criterion, optimizer, loader, epoch, n, avgpool):
     model.train()
     linear_classifier.train()
     
@@ -261,8 +400,8 @@ def train(args, model, linear_classifier, optimizer, loader, epoch, n, avgpool):
         output = model(inp)
         output = linear_classifier(output)
 
-        # compute cross entropy loss
-        loss = nn.CrossEntropyLoss()(output, target)
+        # compute loss using the chosen criterion
+        loss = criterion(output, target)
 
         # compute the gradients
         optimizer.zero_grad()
@@ -531,6 +670,32 @@ if __name__ == '__main__':
     parser.add_argument('--scratch', action='store_true')
     parser.add_argument('--test', action='store_true')
     parser.add_argument('--pretrained_model_weights', default='polypdiag.pth', type=str, help='pre-trained weights')
+
+    # Add sampling method arguments
+    parser.add_argument('--train_sampling', default='random', type=str, 
+                        choices=['uniform', 'random', 'random_window'],
+                        help='Frame sampling method for training')
+    parser.add_argument('--val_sampling', default='uniform', type=str, 
+                        choices=['uniform', 'random', 'random_window'],
+                        help='Frame sampling method for validation')
+    parser.add_argument('--test_sampling', default='uniform', type=str, 
+                        choices=['uniform', 'random', 'random_window'],
+                        help='Frame sampling method for testing')
+    parser.add_argument('--num_frames', default=32, type=int,
+                        help='Number of frames to sample from each video')
+                        
+    # Add focal loss arguments
+    parser.add_argument('--loss_function', default='cross_entropy', type=str,
+                        choices=['cross_entropy', 'focal_loss'],
+                        help='Loss function to use for training')
+    parser.add_argument('--focal_gamma', default=2.0, type=float,
+                        help='Gamma parameter for focal loss (focuses on hard examples)')
+    parser.add_argument('--focal_alpha', default=0.25, type=float,
+                        help='Alpha parameter for focal loss (addresses class imbalance)')
+    
+    # Add seed argument - default to 42 for reproducibility
+    parser.add_argument('--seed', default=42, type=int,
+                        help='Random seed for reproducibility')
 
     # config file
     parser.add_argument("--cfg", dest="cfg_file", help="Path to the config file", type=str,
