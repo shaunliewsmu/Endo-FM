@@ -226,12 +226,35 @@ def eval_finetune(args):
         )
         test_stats, metrics = validate_network(val_loader, model, linear_classifier, args.n_last_blocks,
                                           args.avgpool_patchtokens)
+        test_stats, metrics = validate_network(val_loader, model, linear_classifier, args.n_last_blocks,
+                                  args.avgpool_patchtokens)
+        
         print(f"Metrics of the network on the {len(dataset_val)} test images:")
+        print(f"Specificity: {metrics['specificity'] * 100:.1f}%")
+        print(f"Sensitivity: {metrics['sensitivity'] * 100:.1f}%")
         print(f"F1 score: {metrics['f1'] * 100:.1f}%")
         print(f"AUROC: {metrics['auroc'] * 100:.1f}%")
         print(f"AUPRC: {metrics['auprc'] * 100:.1f}%")
         print("Confusion Matrix:")
         print(metrics['confusion_matrix'])
+
+        # Calculate the combined score
+        # Case 1: Check for zero specificity (penalize heavily)
+        if metrics['specificity'] == 0:
+            # Use a strong penalty but still consider other metrics at lower weights
+            combined_score = (0.1 * metrics['f1']) + (0.05 * metrics['auroc']) + (0.05 * metrics['auprc'])
+            logger.info(f"Applied zero-specificity penalty, reducing combined score to {combined_score:.4f}")
+        else:
+            # Prioritize specificity even more when it exists
+            combined_score = (0.7 * metrics['specificity']) + (0.15 * metrics['f1']) + (0.1 * metrics['auroc']) + (0.05 * metrics['auprc'])
+        print(f"Combined score: {combined_score:.4f}")
+
+        # For binary classification, provide detailed breakdown
+        if args.num_labels == 2:
+            tn, fp, fn, tp = metrics['confusion_matrix'].ravel()
+            print(f"Binary classification details:")
+            print(f"  True Negatives: {tn}, False Positives: {fp}")
+            print(f"  False Negatives: {fn}, True Positives: {tp}")
         
         # Plot and save confusion matrix
         plt.figure(figsize=(10, 8))
@@ -267,7 +290,16 @@ def eval_finetune(args):
         print("Using standard CrossEntropyLoss")
 
     # Optionally resume from a checkpoint
-    to_restore = {"epoch": 0, "best_acc": 0., "best_f1": 0., "best_auroc": 0., "best_auprc": 0.}
+    to_restore = {
+        "epoch": 0, 
+        "best_acc": 0., 
+        "best_f1": 0., 
+        "best_auroc": 0., 
+        "best_auprc": 0.,
+        "best_specificity": 0.,
+        "best_sensitivity": 0.,
+        "best_combined_score": 0.
+    }
     utils.restart_from_checkpoint(
         os.path.join(args.output_dir, "checkpoint.pth.tar"),
         run_variables=to_restore,
@@ -276,15 +308,44 @@ def eval_finetune(args):
         scheduler=scheduler,
     )
     start_epoch = to_restore["epoch"]
-    best_f1 = to_restore["best_f1"]
-    best_auroc = to_restore["best_auroc"]
-    best_auprc = to_restore["best_auprc"]
+    best_f1 = to_restore.get("best_f1", 0.0)
+    best_auroc = to_restore.get("best_auroc", 0.0)
+    best_auprc = to_restore.get("best_auprc", 0.0)
+    best_specificity = to_restore.get("best_specificity", 0.0)
+    best_sensitivity = to_restore.get("best_sensitivity", 0.0)
+    best_combined_score = to_restore.get("best_combined_score", 0.0)
     best_epoch = start_epoch - 1  # Track the epoch with the best performance
 
+    exploration_frequency = 5  # Try a fresh exploration every 5 epochs
+    best_checkpoint_path = os.path.join(args.output_dir, "checkpoint.pth.tar")
+    logger.info(f"Will reload best checkpoint every {exploration_frequency} epochs")
+    
     for epoch in range(start_epoch, args.epochs):
+        # Determine if this should be an exploration epoch
+        is_exploration_epoch = (epoch % exploration_frequency == 0)
+        
+        # Reload the best model checkpoint if it exists (after epoch 0) and not in exploration mode
+        if epoch > 0 and os.path.exists(best_checkpoint_path) and not is_exploration_epoch:
+            logger.info(f"Reloading best model before starting epoch {epoch}")
+            checkpoint = torch.load(best_checkpoint_path, map_location='cpu')
+            
+            # Load model and classifier weights
+            model.load_state_dict(checkpoint["backbone_state_dict"])
+            linear_classifier.load_state_dict(checkpoint["state_dict"])
+            
+            # Don't reset optimizer and scheduler to maintain learning rate progression
+            
+            logger.info(f"Continuing training from best model (specificity: {checkpoint.get('best_specificity', 0):.4f}, F1: {checkpoint.get('best_f1', 0):.4f})")
+        elif is_exploration_epoch:
+            logger.info(f"Exploration epoch {epoch}: Continuing with current model state without reloading best checkpoint")
+        
+        # Set the epoch for the data sampler
         train_loader.sampler.set_epoch(epoch)
-
+        
+        # Train for one epoch
         train_stats = train(args, model, linear_classifier, criterion, optimizer, train_loader, epoch, args.n_last_blocks, args.avgpool_patchtokens)
+        
+        # Update learning rate
         scheduler.step()
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()}, 'epoch': epoch}
@@ -299,48 +360,138 @@ def eval_finetune(args):
                          **{f'test_{k}': v for k, v in test_stats.items()},
                          **{f'metric_{k}': v for k, v in metrics.items() if k != 'confusion_matrix'}}
 
-            if metrics['f1'] > best_f1 and utils.is_main_process():
+            # Define a combined score that prioritizes specificity while not compromising other metrics too much
+            # TODO:Calculate combined score giving higher weight to specificity (adjust weights as needed)
+            combined_score = (0.35 * metrics['specificity']) + (0.3 * metrics['sensitivity']) + (0.2 * metrics['f1']) + (0.1 * metrics['auroc']) + (0.05 * metrics['auprc'])
+
+            # For binary classification, give bonus to models that have at least some true negatives
+            if args.num_labels == 2:
+                tn, fp, fn, tp = metrics['confusion_matrix'].ravel()
+                
+                # Give a bonus to the score if we have true negatives
+                if tn > 0:
+                    previous_score = combined_score
+                    combined_score *= (1.0 + 0.1 * min(tn, 5) / 5.0)  # Up to 10% bonus for having true negatives
+                    logger.info(f"Applied true negative bonus: {previous_score:.4f} → {combined_score:.4f}")
+                    
+                # Log confusion matrix statistics for better tracking
+                logger.info(f"CM stats: TN={tn}, FP={fp}, FN={fn}, TP={tp}")
+
+            # Log the combined score
+            logger.info(f"Epoch {epoch} - Combined score: {combined_score:.4f} (spec: {metrics['specificity']:.4f}, f1: {metrics['f1']:.4f})")
+
+            # Store confusion matrix as a string for logging
+            cm_str = np.array2string(metrics['confusion_matrix'], 
+                                    separator=', ', 
+                                    prefix='', 
+                                    suffix='', 
+                                    threshold=np.inf, 
+                                    edgeitems=np.inf,
+                                    formatter={'int': lambda x: f"{x:4d}"})
+
+            # Log confusion matrix with clearer formatting
+            logger.info(f"Confusion Matrix (epoch {epoch}):\n{cm_str}")
+
+            # Calculate and log specificity for each class from confusion matrix
+            if args.num_labels == 2:
+                tn, fp, fn, tp = metrics['confusion_matrix'].ravel()
+                logger.info(f"Binary classification details:")
+                logger.info(f"  True Negatives: {tn}, False Positives: {fp}")
+                logger.info(f"  False Negatives: {fn}, True Positives: {tp}")
+                logger.info(f"  Specificity (TNR): {metrics['specificity']:.4f}, Sensitivity (TPR): {metrics['sensitivity']:.4f}")
+
+            # Define minimum thresholds for improvement
+            MIN_SCORE_IMPROVEMENT = 0.01  # 1% improvement
+            MIN_SPECIFICITY_IMPROVEMENT = 0.05  # 5% improvement
+
+            # Check if this is an improvement that meets our thresholds
+            specificity_improved = metrics['specificity'] >= (best_specificity + MIN_SPECIFICITY_IMPROVEMENT)
+            score_improved = combined_score >= (best_combined_score + MIN_SCORE_IMPROVEMENT)
+
+            # The baseline minimum requirement: high specificity or significant combined score improvement
+            save_condition = False
+
+            # Case 1: Significant improvement in specificity (prioritize this)
+            if specificity_improved:
+                save_reason = f"specificity improved significantly: {metrics['specificity']:.4f} vs previous {best_specificity:.4f}"
+                save_condition = True
+            # NEW CASE: Significant improvement in sensitivity with acceptable specificity
+            elif metrics['sensitivity'] > (best_sensitivity * 1.2) and metrics['specificity'] >= 0.6:
+                save_reason = f"significant sensitivity improvement: {metrics['sensitivity']:.4f} vs {best_sensitivity:.4f} with acceptable specificity"
+                save_condition = True
+            # Case 2: Specificity stable but combined score improved significantly
+            elif metrics['specificity'] >= best_specificity * 0.95 and score_improved:
+                save_reason = f"combined score improved significantly while maintaining specificity"
+                save_condition = True
+            # Case 3: First model or major score improvement (>5%)
+            elif best_combined_score == 0 or combined_score >= best_combined_score * 1.05:
+                save_reason = f"major improvement in combined score: {combined_score:.4f} vs previous {best_combined_score:.4f}"
+                save_condition = True
+            # Case 4: Similar specificity but much better other metrics
+            elif metrics['specificity'] >= best_specificity * 0.9 and metrics['f1'] >= best_f1 * 1.1:
+                save_reason = f"much better F1 ({metrics['f1']:.4f} vs {best_f1:.4f}) with acceptable specificity"
+                save_condition = True
+
+            if save_condition and utils.is_main_process():
                 with (Path(args.output_dir) / "log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
+                    f.write(f"Epoch {epoch} confusion matrix:\n{cm_str}\n")
+                    f.write(f"Specificity: {metrics['specificity']:.4f}, Sensitivity: {metrics['sensitivity']:.4f}\n")
+                    f.write(f"Saved model because: {save_reason}\n")
+                
+                logger.info(f"Saving new model because: {save_reason}")
+                
                 save_dict = {
                     "epoch": epoch + 1,
                     "state_dict": linear_classifier.state_dict(),
                     "backbone_state_dict": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
+                    "best_combined_score": combined_score,
+                    "best_specificity": metrics['specificity'],
+                    "best_sensitivity": metrics['sensitivity'],
                     "best_f1": metrics['f1'],
-                    "best_auroc": max(best_auroc, metrics['auroc']),
-                    "best_auprc": max(best_auprc, metrics['auprc']),
-                    "train_sampling": args.train_sampling,  # Save sampling method used
+                    "best_auroc": metrics['auroc'],
+                    "best_auprc": metrics['auprc'],
+                    "train_sampling": args.train_sampling,
                     "val_sampling": args.val_sampling,
                     "test_sampling": args.test_sampling,
-                    "loss_function": args.loss_function,  # Save loss function used
-                    "seed": 42,  # Save the seed used
+                    "loss_function": args.loss_function,
+                    "seed": 42,
+                    "save_reason": save_reason,  # Record why we saved this model
                 }
                 if args.loss_function == 'focal_loss':
                     save_dict["focal_alpha"] = args.focal_alpha
                     save_dict["focal_gamma"] = args.focal_gamma
                 
+                # Save the model
                 torch.save(save_dict, os.path.join(args.output_dir, "checkpoint.pth.tar"))
                 
-                # Plot and save confusion matrix for best model
+                # Also save confusion matrix visualization for the best model
                 plt.figure(figsize=(10, 8))
                 sns.heatmap(metrics['confusion_matrix'], annot=True, fmt='d', cmap='Blues')
-                plt.title(f'Confusion Matrix (Epoch {epoch})')
+                plt.title(f'Best Model Confusion Matrix (Epoch {epoch})\n{save_reason}')
                 plt.ylabel('True Label')
                 plt.xlabel('Predicted Label')
-                plt.savefig(os.path.join(args.output_dir, f'confusion_matrix_epoch_{epoch}.png'))
+                plt.savefig(os.path.join(args.output_dir, f'best_confusion_matrix_epoch_{epoch}.png'))
                 
-                # Update best epoch tracking
+                # Update best metrics and epoch tracking
                 best_epoch = epoch
-
-            # Update best metrics
-            if metrics['f1'] > best_f1:
+                best_combined_score = combined_score
+                best_specificity = metrics['specificity']
+                best_sensitivity = metrics['sensitivity']
                 best_f1 = metrics['f1']
-            if metrics['auroc'] > best_auroc:
                 best_auroc = metrics['auroc']
-            if metrics['auprc'] > best_auprc:
                 best_auprc = metrics['auprc']
+                
+                logger.info(f"New best model saved! Combined score: {combined_score:.4f}")
+
+            # log current metrics versus best
+            logger.info(f'Current metrics:')
+            logger.info(f'  Specificity: {metrics["specificity"] * 100:.1f}% (best: {best_specificity * 100:.1f}%)')
+            logger.info(f'  F1: {metrics["f1"] * 100:.1f}% (best: {best_f1 * 100:.1f}%)')
+            logger.info(f'  AUROC: {metrics["auroc"] * 100:.1f}% (best: {best_auroc * 100:.1f}%)')
+            logger.info(f'  AUPRC: {metrics["auprc"] * 100:.1f}% (best: {best_auprc * 100:.1f}%)')
                 
             print(f'Best metrics so far:')
             print(f'F1: {best_f1 * 100:.1f}%')
@@ -352,7 +503,7 @@ def eval_finetune(args):
 
     # After all epochs, load the best model and generate final metrics and confusion matrix
     if not args.test and utils.is_main_process():
-        print("\nTraining complete. Loading best model for final evaluation...")
+        logger.info("\nTraining complete. Loading best model for final evaluation...")
         utils.restart_from_checkpoint(
             os.path.join(args.output_dir, "checkpoint.pth.tar"),
             backbone_state_dict=model,
@@ -360,12 +511,36 @@ def eval_finetune(args):
         )
         
         final_stats, final_metrics = validate_network(val_loader, model, linear_classifier, 
-                                                   args.n_last_blocks, args.avgpool_patchtokens)
+                                                args.n_last_blocks, args.avgpool_patchtokens)
         
-        print(f"Final metrics with best model (from epoch {best_epoch}):")
-        print(f"F1 score: {final_metrics['f1'] * 100:.1f}%")
-        print(f"AUROC: {final_metrics['auroc'] * 100:.1f}%")
-        print(f"AUPRC: {final_metrics['auprc'] * 100:.1f}%")
+        # Calculate final combined score
+        final_combined_score = (0.5 * final_metrics['specificity']) + (0.25 * final_metrics['f1']) + (0.15 * final_metrics['auroc']) + (0.10 * final_metrics['auprc'])
+        
+        logger.info(f"Final metrics with best model (from epoch {best_epoch}):")
+        logger.info(f"Combined score: {final_combined_score:.4f}")
+        logger.info(f"Specificity: {final_metrics['specificity'] * 100:.1f}%")
+        logger.info(f"Sensitivity: {final_metrics['sensitivity'] * 100:.1f}%")
+        logger.info(f"F1 score: {final_metrics['f1'] * 100:.1f}%")
+        logger.info(f"AUROC: {final_metrics['auroc'] * 100:.1f}%")
+        logger.info(f"AUPRC: {final_metrics['auprc'] * 100:.1f}%")
+        
+        # Store confusion matrix as a string for logging
+        cm_str = np.array2string(final_metrics['confusion_matrix'], 
+                                separator=', ', 
+                                prefix='', 
+                                suffix='', 
+                                threshold=np.inf, 
+                                edgeitems=np.inf,
+                                formatter={'int': lambda x: f"{x:4d}"})
+        
+        logger.info(f"Final confusion matrix:\n{cm_str}")
+        
+        # For binary classification, provide additional detailed breakdown
+        if args.num_labels == 2:
+            tn, fp, fn, tp = final_metrics['confusion_matrix'].ravel()
+            logger.info(f"Final binary classification details:")
+            logger.info(f"  True Negatives: {tn}, False Positives: {fp}")
+            logger.info(f"  False Negatives: {fn}, True Positives: {tp}")
         
         # Plot and save confusion matrix for best overall model
         plt.figure(figsize=(10, 8))
@@ -486,7 +661,39 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool):
     metrics['f1'] = f1_score(all_targets, all_outputs, average='weighted')
     
     # Confusion Matrix
-    metrics['confusion_matrix'] = confusion_matrix(all_targets, all_outputs)
+    cm = confusion_matrix(all_targets, all_outputs)
+    metrics['confusion_matrix'] = cm
+
+    # For binary classification, calculate specificity
+    if linear_classifier.module.num_labels == 2:
+        # Specificity = TN / (TN + FP)
+        tn, fp, fn, tp = cm.ravel()
+        metrics['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else 0
+        metrics['sensitivity'] = tp / (tp + fn) if (tp + fn) > 0 else 0
+    else:
+        # For multiclass, calculate specificity for each class using one-vs-rest
+        specificities = []
+        sensitivities = []
+        for i in range(linear_classifier.module.num_labels):
+            # True negatives: all samples that are not predicted as class i and are not class i
+            tn = np.sum(np.logical_and(all_outputs != i, all_targets != i))
+            # False positives: samples predicted as class i but are not class i
+            fp = np.sum(np.logical_and(all_outputs == i, all_targets != i))
+            # False negatives: samples not predicted as class i but are class i
+            fn = np.sum(np.logical_and(all_outputs != i, all_targets == i))
+            # True positives: samples predicted as class i and are class i
+            tp = np.sum(np.logical_and(all_outputs == i, all_targets == i))
+            
+            # Specificity for current class
+            spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+            specificities.append(spec)
+            
+            # Sensitivity for current class
+            sens = tp / (tp + fn) if (tp + fn) > 0 else 0
+            sensitivities.append(sens)
+        
+        metrics['specificity'] = np.mean(specificities)
+        metrics['sensitivity'] = np.mean(sensitivities)
     
     # For binary classification
     if linear_classifier.module.num_labels == 2:
