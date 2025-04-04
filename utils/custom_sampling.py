@@ -216,6 +216,7 @@ class FrameSampler:
     def save_indices_by_dataset(self, dataset_name, split='train'):
         """
         Save the sampling indices for a specific dataset to a CSV file.
+        Modified to match the expected CSV format.
         
         Args:
             dataset_name (str): Name of the dataset
@@ -235,19 +236,16 @@ class FrameSampler:
             try:
                 with open(csv_path, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)
-                    # Write header
-                    writer.writerow(['video_filename', 'total_frames', 'sampled_indices', 'sampling_method', 'seed'])
+                    # Write header with expected format
+                    writer.writerow(['video_filename', 'total_frames', 'sampled_frames'])
                     
-                    # Write data for each video
+                    # Write data for each video in expected format
                     for item in self.sampled_indices[key]:
-                        indices_str = ','.join(map(str, item['indices']))
-                        writer.writerow([
-                            item['video_path'],
-                            item['total_frames'],
-                            indices_str,
-                            item['sampling_method'],
-                            item.get('seed', 42)  # Default to 42 if seed not recorded
-                        ])
+                        # First two columns
+                        row = [item['video_path'], item['total_frames']]
+                        # Add all indices as additional columns
+                        row.extend(item['indices'])
+                        writer.writerow(row)
                 
                 self.logger.info(f"Saved {len(self.sampled_indices[key])} sampling records to {csv_path}")
             except Exception as e:
