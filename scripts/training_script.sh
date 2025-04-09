@@ -4,7 +4,7 @@
 # without requiring complex patching of dataset classes
 
 # Configuration
-EXP_NAME="endo-fm-duke-uniform-focal-2-08-result"
+EXP_NAME="endo-fm-duke-uniform-focal-25-15-result"
 DATASET="ucf101"
 DATA_PATH="data/downstream/duhs-gss-split-5:v0"
 CHECKPOINT="checkpoints/endo_fm.pth"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script for training with custom sampling and focal loss - with fixed seed for reproducibility
-EXP_NAME="endo-fm-duke-uniform-focal-2-08-training"
+EXP_NAME="endo-fm-duke-uniform-focal-25-15-training"
 DATASET="ucf101"
 DATA_PATH="data/downstream/duhs-gss-split-5:v0"
 CHECKPOINT="checkpoints/endo_fm.pth"
@@ -34,8 +34,8 @@ python -m torch.distributed.launch \
   --test_sampling "uniform" \
   --num_frames 8 \
   --loss_function "focal_loss" \
-  --focal_gamma 2.0 \
-  --focal_alpha 0.8 \
+  --focal_gamma 2.5 \
+  --focal_alpha 1.5 \
   --seed 42 \
   --opts \
   DATA.PATH_TO_DATA_DIR "${DATA_PATH}/splits" \
