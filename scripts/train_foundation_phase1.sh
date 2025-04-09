@@ -3,7 +3,7 @@
 # Set CUDA device
 # export CUDA_VISIBLE_DEVICES=1
 # Configuration
-EXP_NAME="foundation_phase1"
+EXP_NAME="foundation_phase1_second"
 DATASET="ucf101"
 DATA_PATH="data/downstream/duhs-gss-split-5:v0"
 CHECKPOINT="checkpoints/endo_fm.pth"
@@ -23,7 +23,7 @@ python main_foundation_phase1.py \
   --test_sampling "uniform" \
   --num_frames 8 \
   --batch_size 8 \
-  --epochs 15 \
+  --epochs 5 \
   --learning_rate 0.0001 \
   --arch "vit_base" \
   --patch_size 16 \

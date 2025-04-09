@@ -1,5 +1,3 @@
-# main_foundation_phase2.py
-
 import argparse
 import os
 import torch
@@ -19,7 +17,148 @@ from datasets import UCF101
 from utils import utils
 from utils.parser import load_config
 from utils.focal_loss import FocalLoss
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, average_precision_score
+from sklearn.metrics import precision_recall_curve, roc_curve, balanced_accuracy_score
+
+def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, device):
+    """Evaluate LSTM model on test set with comprehensive metrics"""
+    model.eval()
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    test_all_preds = []
+    test_all_labels = []
+    test_all_probs = []
+    
+    logger.info("Evaluating LSTM model on test set...")
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            try:
+                # Handle individual feature vectors
+                if len(inputs.shape) == 2:
+                    if inputs.shape[0] == test_loader.batch_size:
+                        # Shape is [batch_size, feature_dim]
+                        inputs = inputs.unsqueeze(1)  # Reshape to [batch_size, 1, feature_dim]
+                
+                # Move data to device
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                
+                # Forward pass
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                
+                # Update statistics
+                test_loss += loss.item() * inputs.size(0)
+                _, predicted = outputs.max(1)
+                test_correct += predicted.eq(labels).sum().item()
+                test_total += labels.size(0)
+                
+                # Store predictions and labels for metrics
+                test_all_preds.extend(predicted.cpu().numpy())
+                test_all_labels.extend(labels.cpu().numpy())
+                
+                # For binary classification, store probabilities
+                if args.num_classes == 2:
+                    probs = torch.softmax(outputs, dim=1)[:, 1]
+                    test_all_probs.extend(probs.cpu().numpy())
+            except Exception as e:
+                logger.error(f"Error in test batch: {str(e)}")
+                continue
+    
+    # Calculate metrics
+    test_loss = test_loss / test_total if test_total > 0 else float('inf')
+    test_accuracy = test_correct / test_total if test_total > 0 else 0
+    
+    # Convert to numpy arrays
+    test_all_preds = np.array(test_all_preds)
+    test_all_labels = np.array(test_all_labels)
+    
+    # Calculate precision, recall, f1
+    test_precision = precision_score(test_all_labels, test_all_preds, average='weighted', zero_division=0)
+    test_recall = recall_score(test_all_labels, test_all_preds, average='weighted', zero_division=0)
+    test_f1 = f1_score(test_all_labels, test_all_preds, average='weighted', zero_division=0)
+    test_balanced_accuracy = balanced_accuracy_score(test_all_labels, test_all_preds)
+    
+    # Calculate confusion matrix
+    test_cm = confusion_matrix(test_all_labels, test_all_preds)
+    
+    # Binary classification metrics
+    test_auroc = 0.5  # Default
+    test_auprc = 0.0  # Default
+    test_specificity = 0.0  # Default
+    
+    if args.num_classes == 2 and len(test_all_probs) > 0 and len(np.unique(test_all_labels)) > 1:
+        # AUROC
+        test_auroc = roc_auc_score(test_all_labels, test_all_probs)
+        
+        # AUPRC
+        test_auprc = average_precision_score(test_all_labels, test_all_probs)
+        
+        # Specificity (true negative rate)
+        tn, fp, fn, tp = test_cm.ravel()
+        test_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    
+    # Log all metrics
+    logger.info("Test Metrics:")
+    logger.info(f"Accuracy: {test_accuracy:.4f}")
+    logger.info(f"Precision: {test_precision:.4f}")
+    logger.info(f"Recall: {test_recall:.4f}")
+    logger.info(f"F1 Score: {test_f1:.4f}")
+    logger.info(f"AUROC: {test_auroc:.4f}")
+    logger.info(f"PR-AUC: {test_auprc:.4f}")
+    logger.info(f"Specificity: {test_specificity:.4f}")
+    logger.info(f"Balanced Accuracy: {test_balanced_accuracy:.4f}")
+    logger.info(f"Confusion Matrix: {test_cm.tolist()}")
+    
+    # Visualize confusion matrix
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(test_cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=range(args.num_classes),
+                yticklabels=range(args.num_classes))
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Test Set Confusion Matrix')
+    plt.savefig(os.path.join(args.log_dir, 'test_confusion_matrix_lstm.png'))
+    plt.close()
+    
+    # For binary classification, also create ROC and PR curves
+    if args.num_classes == 2 and len(test_all_probs) > 0:
+        # ROC Curve
+        plt.figure(figsize=(10, 8))
+        fpr, tpr, _ = roc_curve(test_all_labels, test_all_probs)
+        plt.plot(fpr, tpr, label=f'ROC Curve (AUROC = {test_auroc:.4f})')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Test Set ROC Curve')
+        plt.legend()
+        plt.savefig(os.path.join(args.log_dir, 'test_roc_curve_lstm.png'))
+        plt.close()
+        
+        # PR Curve
+        plt.figure(figsize=(10, 8))
+        precision, recall, _ = precision_recall_curve(test_all_labels, test_all_probs)
+        plt.plot(recall, precision, label=f'PR Curve (AUPRC = {test_auprc:.4f})')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Test Set Precision-Recall Curve')
+        plt.legend()
+        plt.savefig(os.path.join(args.log_dir, 'test_pr_curve_lstm.png'))
+        plt.close()
+    
+    return {
+        'loss': test_loss,
+        'accuracy': test_accuracy,
+        'precision': test_precision,
+        'recall': test_recall,
+        'f1': test_f1,
+        'auroc': test_auroc,
+        'auprc': test_auprc,
+        'specificity': test_specificity,
+        'balanced_accuracy': test_balanced_accuracy,
+        'confusion_matrix': test_cm
+    }
 
 # Create LSTM model
 class FoundationLSTM(torch.nn.Module):
@@ -46,8 +185,22 @@ class FoundationLSTM(torch.nn.Module):
             torch.nn.Dropout(dropout),
             torch.nn.Linear(hidden_size, num_classes)
         )
+        
+        # Add input normalization
+        self.input_norm = torch.nn.LayerNorm(input_size)
     
     def forward(self, x):
+        # Handle various input shapes
+        # If x is just 2D [batch_size, features], reshape it to [batch_size, 1, features]
+        if len(x.shape) == 2:
+            x = x.unsqueeze(1)
+            
+        # Normalize input features
+        batch_size, seq_len, feat_dim = x.shape
+        x = x.reshape(batch_size * seq_len, feat_dim)
+        x = self.input_norm(x)
+        x = x.reshape(batch_size, seq_len, feat_dim)
+        
         # Process sequence with LSTM
         lstm_out, _ = self.lstm(x)
         
@@ -61,10 +214,11 @@ class FoundationLSTM(torch.nn.Module):
 
 class FeatureDataset(torch.utils.data.Dataset):
     """Dataset for loading extracted features"""
-    def __init__(self, features_dir, mode='train', logger=None):
+    def __init__(self, features_dir, mode='train', logger=None, input_size=768):
         self.features_dir = Path(features_dir) / mode
         self.mode = mode
         self.logger = logger
+        self.input_size = input_size
         
         # Find all feature files
         self.feature_files = sorted(list(self.features_dir.glob('*.npy')))
@@ -78,15 +232,18 @@ class FeatureDataset(torch.utils.data.Dataset):
         
         # Extract labels from filenames (format: index_label.npy)
         self.labels = []
+        valid_files = []
         for file_path in self.feature_files:
             try:
                 # Extract label from filename
                 label = int(file_path.stem.split('_')[-1])
                 self.labels.append(label)
+                valid_files.append(file_path)
             except Exception as e:
                 if logger:
                     logger.warning(f"Failed to parse label from {file_path.name}: {e}")
-                    self.feature_files.remove(file_path)
+        
+        self.feature_files = valid_files
     
     def __len__(self):
         return len(self.feature_files)
@@ -99,6 +256,10 @@ class FeatureDataset(torch.utils.data.Dataset):
             # Convert to tensor
             feature = torch.from_numpy(feature).float()
             
+            # Make sure feature has correct format for LSTM: [sequence_length, feature_dim]
+            if len(feature.shape) == 1:  # Single feature vector
+                feature = feature.unsqueeze(0)  # Add sequence dimension [feature_dim] -> [1, feature_dim]
+            
             # Get label
             label = self.labels[idx]
             
@@ -108,7 +269,7 @@ class FeatureDataset(torch.utils.data.Dataset):
                 self.logger.error(f"Error loading feature {self.feature_files[idx]}: {e}")
             
             # Return empty tensor and label as fallback
-            return torch.zeros((1, 768), dtype=torch.float32), self.labels[idx]
+            return torch.zeros((1, self.input_size), dtype=torch.float32), self.labels[idx]
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Foundation Model + LSTM (Phase 2)')
@@ -212,8 +373,10 @@ def extract_features(args, logger):
     feature_dir = Path(args.features_dir)
     train_dir = feature_dir / 'train'
     val_dir = feature_dir / 'val'
+    test_dir = feature_dir / 'test'  # Also extract test features
     train_dir.mkdir(parents=True, exist_ok=True)
     val_dir.mkdir(parents=True, exist_ok=True)
+    test_dir.mkdir(parents=True, exist_ok=True)
     
     # Load configuration
     config = load_config(args)
@@ -230,6 +393,15 @@ def extract_features(args, logger):
         
         val_dataset = UCF101(cfg=config, mode="val", num_retries=10)
         logger.info(f"Created val dataset with {len(val_dataset)} samples")
+        
+        # Try to create test dataset (fallback to val if not available)
+        try:
+            test_dataset = UCF101(cfg=config, mode="test", num_retries=10)
+            logger.info(f"Created test dataset with {len(test_dataset)} samples")
+        except Exception as e:
+            logger.info(f"No separate test dataset found: {str(e)}")
+            logger.info("Using validation dataset for test")
+            test_dataset = val_dataset
         
         # Create dataloaders
         train_loader = torch.utils.data.DataLoader(
@@ -248,7 +420,15 @@ def extract_features(args, logger):
             shuffle=False
         )
         
-        logger.info(f"Created dataloaders with {len(train_loader)} train batches and {len(val_loader)} val batches")
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            shuffle=False
+        )
+        
+        logger.info(f"Created dataloaders with {len(train_loader)} train batches, {len(val_loader)} val batches, and {len(test_loader)} test batches")
     except Exception as e:
         logger.error(f"Error creating datasets: {str(e)}")
         raise
@@ -297,29 +477,50 @@ def extract_features(args, logger):
     
     # Extract features for training set
     logger.info("Extracting features for training set...")
-    extract_split_features(model, train_loader, train_dir, logger)
+    extract_split_features(model, train_loader, train_dir, logger, args.num_frames)
     
     # Extract features for validation set
     logger.info("Extracting features for validation set...")
-    extract_split_features(model, val_loader, val_dir, logger)
+    extract_split_features(model, val_loader, val_dir, logger, args.num_frames)
+    
+    # Extract features for test set
+    logger.info("Extracting features for test set...")
+    extract_split_features(model, test_loader, test_dir, logger, args.num_frames)
     
     logger.info("Feature extraction completed")
 
-def extract_split_features(model, dataloader, output_dir, logger):
-    """Extract features for a data split"""
+def extract_split_features(model, dataloader, output_dir, logger, num_frames=8):
+    """
+    Extract features for a data split, ensuring proper shape for LSTM
+    
+    This improved version tracks features by video ID and organizes them into sequences
+    """
+    # Dictionary to collect features by video
+    video_features = {}
+    
     with torch.no_grad():
-        for batch_idx, (inputs, targets, indices, _) in enumerate(tqdm(dataloader, desc="Extracting features")):
+        for batch_idx, (inputs, targets, indices, meta) in enumerate(tqdm(dataloader, desc="Extracting features")):
             try:
                 # Move inputs to GPU
                 inputs = inputs.cuda(non_blocking=True)
                 
-                # Get features
+                # Get foundation model features - shape will be [batch_size, feature_dim]
                 features = model(inputs)
                 
-                # Save features for each sample in batch
+                # Debug the feature shape
+                if batch_idx == 0:
+                    logger.info(f"Foundation model output shape: {features.shape}")
+                
+                # Process each sample in the batch
                 for i, idx in enumerate(indices):
-                    feature_path = output_dir / f"{idx.item()}_{targets[i].item()}.npy"
-                    np.save(feature_path, features[i].cpu().numpy())
+                    video_id = idx.item()
+                    label = targets[i].item()
+                    
+                    # Create structured features
+                    feature_tensor = features[i].cpu().numpy()  # Single feature vector
+                    
+                    # Save the feature with structured filename: {video_id}_{label}.npy
+                    np.save(output_dir / f"{video_id}_{label}.npy", feature_tensor)
                 
                 # Log progress
                 if batch_idx % 10 == 0:
@@ -368,8 +569,31 @@ def train_lstm(args, logger):
             logger.error(f"Failed to initialize WandB: {str(e)}")
     
     # Create feature datasets
-    train_dataset = FeatureDataset(args.features_dir, mode='train', logger=logger)
-    val_dataset = FeatureDataset(args.features_dir, mode='val', logger=logger)
+    train_dataset = FeatureDataset(args.features_dir, mode='train', logger=logger, input_size=args.input_size)
+    val_dataset = FeatureDataset(args.features_dir, mode='val', logger=logger, input_size=args.input_size)
+    
+    # Create or use test dataset (using validation split if no separate test features exist)
+    test_dir = Path(args.features_dir) / 'test'
+    if test_dir.exists() and len(list(test_dir.glob('*.npy'))) > 0:
+        test_dataset = FeatureDataset(args.features_dir, mode='test', logger=logger, input_size=args.input_size)
+        logger.info(f"Using separate test dataset with {len(test_dataset)} samples")
+    else:
+        test_dataset = val_dataset
+        logger.info("Using validation dataset as test dataset")
+    
+    # Check if we have valid datasets
+    if len(train_dataset) == 0:
+        logger.error("No training samples found. Make sure feature extraction worked correctly.")
+        return None
+    
+    if len(val_dataset) == 0:
+        logger.error("No validation samples found. Make sure feature extraction worked correctly.")
+        return None
+    
+    # Log a sample feature shape to help debugging
+    if len(train_dataset) > 0:
+        sample_feature, _ = train_dataset[0]
+        logger.info(f"Sample feature shape: {sample_feature.shape}")
     
     # Create dataloaders
     train_loader = torch.utils.data.DataLoader(
@@ -442,6 +666,7 @@ def train_lstm(args, logger):
     
     # Initialize training variables
     best_val_f1 = 0.0
+    best_val_auprc = 0.0  # Also track AUPRC
     patience_counter = 0
     
     # Initialize history
@@ -452,6 +677,8 @@ def train_lstm(args, logger):
         'val_acc': [],
         'train_f1': [],
         'val_f1': [],
+        'val_auroc': [],
+        'val_auprc': [],  # Add AUPRC tracking
         'val_confusion_matrix': []
     }
     
@@ -471,6 +698,17 @@ def train_lstm(args, logger):
         
         for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]"):
             try:
+                # Debug information - log input shape
+                if len(inputs.shape) != 3:
+                    logger.info(f"Input shape before reshaping: {inputs.shape}")
+                    
+                    # Handle individual feature vectors by adding sequence dimension
+                    if len(inputs.shape) == 2:
+                        if inputs.shape[0] == args.batch_size:
+                            # Shape is [batch_size, feature_dim]
+                            inputs = inputs.unsqueeze(1)  # Reshape to [batch_size, 1, feature_dim]
+                            logger.info(f"Reshaped inputs to: {inputs.shape}")
+                
                 # Move data to device
                 inputs = inputs.to(device)
                 labels = labels.to(device)
@@ -504,7 +742,10 @@ def train_lstm(args, logger):
         # Calculate F1 score if predictions are available
         train_f1 = 0.0
         if train_all_preds and train_all_labels:
-            train_f1 = f1_score(train_all_labels, train_all_preds, average='weighted')
+            try:
+                train_f1 = f1_score(train_all_labels, train_all_preds, average='weighted')
+            except Exception as e:
+                logger.error(f"Error calculating train F1: {str(e)}")
         
         # Validation
         model.eval()
@@ -518,6 +759,12 @@ def train_lstm(args, logger):
         with torch.no_grad():
             for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Val]"):
                 try:
+                    # Handle individual feature vectors
+                    if len(inputs.shape) == 2:
+                        if inputs.shape[0] == args.batch_size:
+                            # Shape is [batch_size, feature_dim]
+                            inputs = inputs.unsqueeze(1)  # Reshape to [batch_size, 1, feature_dim]
+                    
                     # Move data to device
                     inputs = inputs.to(device)
                     labels = labels.to(device)
@@ -553,17 +800,22 @@ def train_lstm(args, logger):
         val_cm = np.zeros((args.num_classes, args.num_classes))
         
         if val_all_preds and val_all_labels:
-            val_f1 = f1_score(val_all_labels, val_all_preds, average='weighted')
-            val_cm = confusion_matrix(val_all_labels, val_all_preds, labels=range(args.num_classes))
+            try:
+                val_f1 = f1_score(val_all_labels, val_all_preds, average='weighted')
+                val_cm = confusion_matrix(val_all_labels, val_all_preds, labels=range(args.num_classes))
+            except Exception as e:
+                logger.error(f"Error calculating validation metrics: {str(e)}")
         
         # Calculate additional metrics for binary classification
         val_auroc = 0.5  # Default value
         val_specificity = 0.0  # Default value
         val_sensitivity = 0.0  # Default value
+        val_auprc = 0.0  # Default value
         
         if args.num_classes == 2 and len(val_all_probs) > 0 and len(np.unique(val_all_labels)) > 1:
             try:
                 val_auroc = roc_auc_score(val_all_labels, val_all_probs)
+                val_auprc = average_precision_score(val_all_labels, val_all_probs)
                 
                 # Calculate specificity and sensitivity from confusion matrix
                 if val_cm.shape == (2, 2):
@@ -580,6 +832,8 @@ def train_lstm(args, logger):
         history['val_acc'].append(val_acc)
         history['train_f1'].append(train_f1)
         history['val_f1'].append(val_f1)
+        history['val_auroc'].append(val_auroc)
+        history['val_auprc'].append(val_auprc)  # Track AUPRC
         history['val_confusion_matrix'].append(val_cm.tolist())
         
         # Log epoch results
@@ -589,7 +843,7 @@ def train_lstm(args, logger):
         
         if args.num_classes == 2:
             logger.info(f"Val AUROC: {val_auroc:.4f}, Val Specificity: {val_specificity:.4f}, "
-                        f"Val Sensitivity: {val_sensitivity:.4f}")
+                        f"Val Sensitivity: {val_sensitivity:.4f}, Val AUPRC: {val_auprc:.4f}")  # Log AUPRC
         
         # Log to WandB
         if args.use_wandb:
@@ -608,44 +862,70 @@ def train_lstm(args, logger):
                 wandb_metrics.update({
                     'val_auroc': val_auroc,
                     'val_specificity': val_specificity,
-                    'val_sensitivity': val_sensitivity
+                    'val_sensitivity': val_sensitivity,
+                    'val_auprc': val_auprc  # Add AUPRC to WandB
                 })
+                
+                # Add confusion matrix to WandB
+                try:
+                    wandb.log({
+                        "confusion_matrix": wandb.plot.confusion_matrix(
+                            probs=None,
+                            y_true=val_all_labels,
+                            preds=val_all_preds,
+                            class_names=[f"Class {i}" for i in range(args.num_classes)]
+                        )
+                    })
+                except Exception as e:
+                    logger.error(f"Error logging confusion matrix to WandB: {str(e)}")
             
             wandb.log(wandb_metrics)
         
         # Update learning rate
         scheduler.step(val_f1)
         
-        # Early stopping check
-        if val_f1 > best_val_f1:
-            logger.info(f"Validation F1 improved from {best_val_f1:.4f} to {val_f1:.4f}")
-            best_val_f1 = val_f1
-            patience_counter = 0
+        # Early stopping check - using both F1 and AUPRC
+        improvement = False
+        if val_f1 > best_val_f1 or (val_auprc > best_val_auprc and args.num_classes == 2):
+            if val_f1 > best_val_f1:
+                logger.info(f"Validation F1 improved from {best_val_f1:.4f} to {val_f1:.4f}")
+                best_val_f1 = val_f1
+                improvement = True
             
-            # Save best model
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'val_loss': val_loss,
-                'val_acc': val_acc,
-                'val_f1': val_f1,
-                'history': history,
-                'args': vars(args)
-            }, model_save_path)
-            logger.info(f"Saved best model to {model_save_path}")
+            if val_auprc > best_val_auprc and args.num_classes == 2:
+                logger.info(f"Validation AUPRC improved from {best_val_auprc:.4f} to {val_auprc:.4f}")
+                best_val_auprc = val_auprc
+                improvement = True
             
-            # Plot and save confusion matrix
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(val_cm, annot=True, fmt='d', cmap='Blues', 
-                        xticklabels=range(args.num_classes), 
-                        yticklabels=range(args.num_classes))
-            plt.xlabel('Predicted')
-            plt.ylabel('True')
-            plt.title(f'Confusion Matrix - Epoch {epoch+1}')
-            plt.savefig(os.path.join(args.log_dir, f'confusion_matrix_epoch_{epoch+1}.png'))
-            plt.close()
+            if improvement:
+                patience_counter = 0
+                
+                # Save best model
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'val_loss': val_loss,
+                    'val_acc': val_acc,
+                    'val_f1': val_f1,
+                    'val_auroc': val_auroc,
+                    'val_auprc': val_auprc,  # Save AUPRC
+                    'history': history,
+                    'args': vars(args)
+                }, model_save_path)
+                logger.info(f"Saved best model to {model_save_path}")
+                
+                # Plot and save confusion matrix
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(val_cm, annot=True, fmt='d', cmap='Blues', 
+                            xticklabels=range(args.num_classes), 
+                            yticklabels=range(args.num_classes))
+                plt.xlabel('Predicted')
+                plt.ylabel('True')
+                plt.title(f'Confusion Matrix - Epoch {epoch+1}')
+                plt.savefig(os.path.join(args.log_dir, f'confusion_matrix_epoch_{epoch+1}.png'))
+                plt.close()
         else:
             patience_counter += 1
             logger.info(f"Validation F1 did not improve. Patience: {patience_counter}/{args.patience}")
@@ -685,6 +965,36 @@ def train_lstm(args, logger):
     with open(os.path.join(args.log_dir, 'training_history.json'), 'w') as f:
         import json
         json.dump(history, f)
+    
+    # Test the best model on the test set
+    logger.info("Loading best model for evaluation on test set...")
+    try:
+        best_checkpoint = torch.load(model_save_path, map_location=device)
+        model.load_state_dict(best_checkpoint["model_state_dict"])
+        
+        # Create a test dataloader
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False
+        )
+        
+        # Evaluate on test set
+        test_metrics = evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, device)
+        
+        # Final summary
+        logger.info("LSTM Model (Phase 2) training completed")
+        logger.info(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
+        logger.info(f"Test Precision: {test_metrics['precision']:.4f}")
+        logger.info(f"Test Recall: {test_metrics['recall']:.4f}")
+        logger.info(f"Test F1 Score: {test_metrics['f1']:.4f}")
+        logger.info(f"Test AUROC: {test_metrics['auroc']:.4f}")
+        logger.info(f"Test PR-AUC: {test_metrics['auprc']:.4f}")
+    except Exception as e:
+        logger.error(f"Error evaluating model on test set: {str(e)}")
     
     # Close WandB
     if args.use_wandb:

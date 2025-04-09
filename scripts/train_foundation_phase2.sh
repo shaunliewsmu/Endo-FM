@@ -3,11 +3,11 @@
 # Set CUDA device
 export CUDA_VISIBLE_DEVICES=1
 # Configuration
-EXP_NAME="foundation_phase2"
+EXP_NAME="foundation_phase2_second"
 DATASET="ucf101"
 DATA_PATH="data/downstream/duhs-gss-split-5:v0"
 # FOUNDATION_CHECKPOINT="checkpoints/endo_fm.pth"  # Use foundation model directly
-FOUNDATION_CHECKPOINT="models/foundation_phase1/foundation_model_20250409_102656.pth"  # Use fine-tuned model if available
+FOUNDATION_CHECKPOINT="models/foundation_phase1_second/foundation_model_20250409_172439.pth"  # Use fine-tuned model if available
 FEATURES_DIR="features/foundation_model"
 
 # Create directories
@@ -32,7 +32,7 @@ python main_foundation_phase2.py \
   --dropout 0.5 \
   --bidirectional \
   --batch_size 32 \
-  --epochs 30 \
+  --epochs 2 \
   --learning_rate 0.001 \
   --num_classes 2 \
   --loss_type "focal" \

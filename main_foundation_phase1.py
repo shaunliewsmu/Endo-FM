@@ -1,5 +1,3 @@
-# main_foundation_phase1.py
-
 import argparse
 import os
 import torch
@@ -10,6 +8,8 @@ from pathlib import Path
 import logging
 from datetime import datetime
 import wandb
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from models import get_vit_base_patch16_224
 from datasets import UCF101
@@ -18,7 +18,138 @@ from utils.meters import TestMeter
 from utils.parser import load_config
 from utils.focal_loss import FocalLoss
 from utils.custom_sampling import set_all_random_seeds
-from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix, average_precision_score
+from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix, average_precision_score, precision_recall_curve, roc_curve
+from sklearn.metrics import precision_score, recall_score, balanced_accuracy_score
+
+def evaluate_on_test_set(model, test_loader, criterion, args, logger):
+    """Evaluate model on test set with comprehensive metrics"""
+    model.eval()
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    test_all_preds = []
+    test_all_labels = []
+    test_all_probs = []
+    
+    logger.info("Evaluating model on test set...")
+    with torch.no_grad():
+        for inputs, targets, _, _ in test_loader:
+            # Move data to GPU
+            inputs = inputs.cuda(non_blocking=True)
+            targets = targets.cuda(non_blocking=True)
+            
+            # Forward pass
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            
+            # Update statistics
+            test_loss += loss.item() * inputs.size(0)
+            _, predicted = outputs.max(1)
+            test_correct += predicted.eq(targets).sum().item()
+            test_total += targets.size(0)
+            
+            # Store predictions and labels for metrics
+            test_all_preds.extend(predicted.cpu().numpy())
+            test_all_labels.extend(targets.cpu().numpy())
+            
+            # For binary classification, store probabilities
+            if args.num_classes == 2:
+                probs = torch.softmax(outputs, dim=1)[:, 1]
+                test_all_probs.extend(probs.cpu().numpy())
+    
+    # Calculate metrics
+    test_loss = test_loss / test_total
+    test_accuracy = test_correct / test_total
+    
+    # Convert to numpy arrays
+    test_all_preds = np.array(test_all_preds)
+    test_all_labels = np.array(test_all_labels)
+    
+    # Calculate precision, recall, f1
+    test_precision = precision_score(test_all_labels, test_all_preds, average='weighted', zero_division=0)
+    test_recall = recall_score(test_all_labels, test_all_preds, average='weighted', zero_division=0)
+    test_f1 = f1_score(test_all_labels, test_all_preds, average='weighted', zero_division=0)
+    test_balanced_accuracy = balanced_accuracy_score(test_all_labels, test_all_preds)
+    
+    # Calculate confusion matrix
+    test_cm = confusion_matrix(test_all_labels, test_all_preds)
+    
+    # Binary classification metrics
+    test_auroc = 0.5  # Default
+    test_auprc = 0.0  # Default
+    test_specificity = 0.0  # Default
+    
+    if args.num_classes == 2 and len(test_all_probs) > 0 and len(np.unique(test_all_labels)) > 1:
+        # AUROC
+        test_auroc = roc_auc_score(test_all_labels, test_all_probs)
+        
+        # AUPRC
+        test_auprc = average_precision_score(test_all_labels, test_all_probs)
+        
+        # Specificity (true negative rate)
+        tn, fp, fn, tp = test_cm.ravel()
+        test_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    
+    # Log all metrics
+    logger.info("Test Metrics:")
+    logger.info(f"Accuracy: {test_accuracy:.4f}")
+    logger.info(f"Precision: {test_precision:.4f}")
+    logger.info(f"Recall: {test_recall:.4f}")
+    logger.info(f"F1 Score: {test_f1:.4f}")
+    logger.info(f"AUROC: {test_auroc:.4f}")
+    logger.info(f"PR-AUC: {test_auprc:.4f}")
+    logger.info(f"Specificity: {test_specificity:.4f}")
+    logger.info(f"Balanced Accuracy: {test_balanced_accuracy:.4f}")
+    logger.info(f"Confusion Matrix: {test_cm.tolist()}")
+    
+    # Visualize confusion matrix
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(test_cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=range(args.num_classes),
+                yticklabels=range(args.num_classes))
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Test Set Confusion Matrix')
+    plt.savefig(os.path.join(args.log_dir, 'test_confusion_matrix.png'))
+    plt.close()
+    
+    # For binary classification, also create ROC and PR curves
+    if args.num_classes == 2 and len(test_all_probs) > 0:
+        # ROC Curve
+        plt.figure(figsize=(10, 8))
+        fpr, tpr, _ = roc_curve(test_all_labels, test_all_probs)
+        plt.plot(fpr, tpr, label=f'ROC Curve (AUROC = {test_auroc:.4f})')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Test Set ROC Curve')
+        plt.legend()
+        plt.savefig(os.path.join(args.log_dir, 'test_roc_curve.png'))
+        plt.close()
+        
+        # PR Curve
+        plt.figure(figsize=(10, 8))
+        precision, recall, _ = precision_recall_curve(test_all_labels, test_all_probs)
+        plt.plot(recall, precision, label=f'PR Curve (AUPRC = {test_auprc:.4f})')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Test Set Precision-Recall Curve')
+        plt.legend()
+        plt.savefig(os.path.join(args.log_dir, 'test_pr_curve.png'))
+        plt.close()
+    
+    return {
+        'loss': test_loss,
+        'accuracy': test_accuracy,
+        'precision': test_precision,
+        'recall': test_recall,
+        'f1': test_f1,
+        'auroc': test_auroc,
+        'auprc': test_auprc,
+        'specificity': test_specificity,
+        'balanced_accuracy': test_balanced_accuracy,
+        'confusion_matrix': test_cm
+    }
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Foundation Model Fine-tuning on Frames (Phase 1)')
@@ -162,6 +293,15 @@ def main():
         val_dataset = UCF101(cfg=config, mode="val", num_retries=10)
         logger.info(f"Created val dataset with {len(val_dataset)} samples")
         
+        # Create test dataset (using validation split if no separate test split exists)
+        try:
+            test_dataset = UCF101(cfg=config, mode="test", num_retries=10)
+            logger.info(f"Created test dataset with {len(test_dataset)} samples")
+        except Exception as e:
+            logger.info(f"No separate test dataset found: {str(e)}")
+            logger.info("Using validation dataset as test dataset")
+            test_dataset = val_dataset
+        
         # Create distributed sampler for training
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
         
@@ -183,7 +323,15 @@ def main():
             shuffle=False
         )
         
-        logger.info(f"Created dataloaders with {len(train_loader)} train batches and {len(val_loader)} val batches")
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            shuffle=False
+        )
+        
+        logger.info(f"Created dataloaders with {len(train_loader)} train batches, {len(val_loader)} val batches, and {len(test_loader)} test batches")
     except Exception as e:
         logger.error(f"Error creating datasets: {str(e)}")
         raise
@@ -214,7 +362,7 @@ def main():
         model = model.cuda()
         
         # Use DistributedDataParallel
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu],find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         
         logger.info(f"Model created and initialized")
     except Exception as e:
@@ -247,6 +395,7 @@ def main():
     # Initialize variables for early stopping
     best_val_loss = float('inf')
     best_val_f1 = 0.0
+    best_val_auprc = 0.0  # Track AUPRC for early stopping (new)
     patience_counter = 0
     
     # Initialize training history
@@ -257,6 +406,8 @@ def main():
         'val_acc': [],
         'train_f1': [],
         'val_f1': [],
+        'val_auroc': [],
+        'val_auprc': [],  # Add AUPRC tracking
         'val_confusion_matrix': []
     }
     
@@ -340,7 +491,7 @@ def main():
                 val_all_preds.extend(predicted.cpu().numpy())
                 val_all_labels.extend(targets.cpu().numpy())
                 
-                # For binary classification, store probabilities for ROC-AUC
+                # For binary classification, store probabilities for ROC-AUC and AUPRC
                 if args.num_classes == 2:
                     probs = torch.softmax(outputs, dim=1)[:, 1]
                     val_all_probs.extend(probs.cpu().numpy())
@@ -354,13 +505,24 @@ def main():
         # Calculate additional metrics for binary classification
         val_auroc = 0.5  # Default value
         val_auprc = 0.0  # Default value
+        val_specificity = 0.0  # Default value
+        val_sensitivity = 0.0  # Default value
         
         if args.num_classes == 2 and len(np.unique(val_all_labels)) > 1:
             try:
+                # Calculate AUROC
                 val_auroc = roc_auc_score(val_all_labels, val_all_probs)
+                
+                # Calculate AUPRC explicitly
                 val_auprc = average_precision_score(val_all_labels, val_all_probs)
-            except:
-                pass
+                
+                # Calculate specificity and sensitivity from confusion matrix
+                if val_cm.shape == (2, 2):
+                    tn, fp, fn, tp = val_cm.ravel()
+                    val_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+                    val_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+            except Exception as e:
+                logger.error(f"Error calculating binary metrics: {str(e)}")
         
         # Update history
         history['train_loss'].append(train_loss)
@@ -369,6 +531,8 @@ def main():
         history['val_acc'].append(val_acc)
         history['train_f1'].append(train_f1)
         history['val_f1'].append(val_f1)
+        history['val_auroc'].append(val_auroc)
+        history['val_auprc'].append(val_auprc)  # Add AUPRC
         history['val_confusion_matrix'].append(val_cm.tolist())
         
         # Log epoch results
@@ -395,45 +559,191 @@ def main():
             if args.num_classes == 2:
                 wandb_metrics.update({
                     'val_auroc': val_auroc,
-                    'val_auprc': val_auprc
+                    'val_auprc': val_auprc,  # Add AUPRC to WandB logs
+                    'val_specificity': val_specificity,
+                    'val_sensitivity': val_sensitivity
                 })
+                
+                # Log confusion matrix to WandB
+                try:
+                    wandb.log({
+                        "confusion_matrix": wandb.plot.confusion_matrix(
+                            probs=None,
+                            y_true=val_all_labels,
+                            preds=val_all_preds,
+                            class_names=[f"Class {i}" for i in range(args.num_classes)]
+                        )
+                    })
+                except Exception as e:
+                    logger.error(f"Error logging confusion matrix to WandB: {str(e)}")
             
             wandb.log(wandb_metrics)
         
         # Update learning rate
         scheduler.step()
         
-        # Early stopping check (using F1 score)
-        if val_f1 > best_val_f1:
-            logger.info(f"Validation F1 improved from {best_val_f1:.4f} to {val_f1:.4f}")
-            best_val_f1 = val_f1
-            patience_counter = 0
-            
-            # Save best model
-            if utils.is_main_process():
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'val_loss': val_loss,
-                    'val_acc': val_acc,
-                    'val_f1': val_f1,
-                    'history': history,
-                    'args': vars(args)
-                }, model_save_path)
-                logger.info(f"Saved best model to {model_save_path}")
+        # Early stopping check (using both F1 and AUPRC)
+        improvement = False
+        if val_f1 > best_val_f1 or (val_auprc > best_val_auprc and args.num_classes == 2):
+            if val_f1 > best_val_f1:
+                logger.info(f"Validation F1 improved from {best_val_f1:.4f} to {val_f1:.4f}")
+                best_val_f1 = val_f1
+                improvement = True
+                
+            if val_auprc > best_val_auprc and args.num_classes == 2:
+                logger.info(f"Validation AUPRC improved from {best_val_auprc:.4f} to {val_auprc:.4f}")
+                best_val_auprc = val_auprc
+                improvement = True
+                
+            if improvement:
+                patience_counter = 0
+                
+                # Save best model
+                if utils.is_main_process():
+                    torch.save({
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'val_loss': val_loss,
+                        'val_acc': val_acc,
+                        'val_f1': val_f1,
+                        'val_auroc': val_auroc,
+                        'val_auprc': val_auprc,  # Save AUPRC
+                        'history': history,
+                        'args': vars(args)
+                    }, model_save_path)
+                    logger.info(f"Saved best model to {model_save_path}")
+                
+                # Plot and save confusion matrix
+                if utils.is_main_process():
+                    plt.figure(figsize=(10, 8))
+                    sns.heatmap(val_cm, annot=True, fmt='d', cmap='Blues',
+                                xticklabels=range(args.num_classes),
+                                yticklabels=range(args.num_classes))
+                    plt.xlabel('Predicted')
+                    plt.ylabel('True')
+                    plt.title(f'Confusion Matrix - Epoch {epoch+1}')
+                    plt.savefig(os.path.join(args.log_dir, f'confusion_matrix_epoch_{epoch+1}.png'))
+                    plt.close()
+                    
+                    # Save normalized confusion matrix
+                    if val_cm.sum() > 0:
+                        plt.figure(figsize=(10, 8))
+                        cm_normalized = val_cm.astype('float') / val_cm.sum(axis=1)[:, np.newaxis]
+                        sns.heatmap(cm_normalized, annot=True, fmt='.2f', cmap='Blues',
+                                    xticklabels=range(args.num_classes),
+                                    yticklabels=range(args.num_classes))
+                        plt.xlabel('Predicted')
+                        plt.ylabel('True')
+                        plt.title(f'Normalized Confusion Matrix - Epoch {epoch+1}')
+                        plt.savefig(os.path.join(args.log_dir, f'norm_confusion_matrix_epoch_{epoch+1}.png'))
+                        plt.close()
+                        
+                    # For binary classification, also create ROC and PR curves
+                    if args.num_classes == 2 and len(val_all_probs) > 0:
+                        # ROC Curve
+                        plt.figure(figsize=(10, 8))
+                        from sklearn.metrics import roc_curve
+                        fpr, tpr, _ = roc_curve(val_all_labels, val_all_probs)
+                        plt.plot(fpr, tpr, label=f'ROC Curve (AUROC = {val_auroc:.4f})')
+                        plt.plot([0, 1], [0, 1], 'k--')
+                        plt.xlabel('False Positive Rate')
+                        plt.ylabel('True Positive Rate')
+                        plt.title(f'ROC Curve - Epoch {epoch+1}')
+                        plt.legend()
+                        plt.savefig(os.path.join(args.log_dir, f'roc_curve_epoch_{epoch+1}.png'))
+                        plt.close()
+                        
+                        # PR Curve
+                        plt.figure(figsize=(10, 8))
+                        precision, recall, _ = precision_recall_curve(val_all_labels, val_all_probs)
+                        plt.plot(recall, precision, label=f'PR Curve (AUPRC = {val_auprc:.4f})')
+                        plt.xlabel('Recall')
+                        plt.ylabel('Precision')
+                        plt.title(f'Precision-Recall Curve - Epoch {epoch+1}')
+                        plt.legend()
+                        plt.savefig(os.path.join(args.log_dir, f'pr_curve_epoch_{epoch+1}.png'))
+                        plt.close()
         else:
             patience_counter += 1
-            logger.info(f"Validation F1 did not improve. Patience: {patience_counter}/{args.patience}")
+            logger.info(f"Validation metrics did not improve. Patience: {patience_counter}/{args.patience}")
     
     # Training completed
     logger.info("Training completed!")
     logger.info(f"Best validation F1: {best_val_f1:.4f}")
+    logger.info(f"Best validation AUPRC: {best_val_auprc:.4f}")
+    
+    # Plot training history
+    if utils.is_main_process():
+        plt.figure(figsize=(15, 10))
+        plt.subplot(2, 3, 1)
+        plt.plot(history['train_loss'], label='Train')
+        plt.plot(history['val_loss'], label='Validation')
+        plt.title('Loss')
+        plt.xlabel('Epoch')
+        plt.legend()
+        
+        plt.subplot(2, 3, 2)
+        plt.plot(history['train_acc'], label='Train')
+        plt.plot(history['val_acc'], label='Validation')
+        plt.title('Accuracy')
+        plt.xlabel('Epoch')
+        plt.legend()
+        
+        plt.subplot(2, 3, 3)
+        plt.plot(history['train_f1'], label='Train')
+        plt.plot(history['val_f1'], label='Validation')
+        plt.title('F1 Score')
+        plt.xlabel('Epoch')
+        plt.legend()
+        
+        if args.num_classes == 2:
+            plt.subplot(2, 3, 4)
+            plt.plot(history['val_auroc'], label='AUROC')
+            plt.title('ROC AUC')
+            plt.xlabel('Epoch')
+            plt.legend()
+            
+            plt.subplot(2, 3, 5)
+            plt.plot(history['val_auprc'], label='AUPRC')
+            plt.title('PR AUC')
+            plt.xlabel('Epoch')
+            plt.legend()
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.log_dir, 'training_history.png'))
+        plt.close()
+        
+        # Save history to file
+        with open(os.path.join(args.log_dir, 'training_history.json'), 'w') as f:
+            import json
+            json.dump(history, f)
     
     # Close WandB
     if args.use_wandb and utils.is_main_process():
         wandb.finish()
+    
+    # Test the best model on the test set
+    logger.info("Loading best model for evaluation on test set...")
+    if utils.is_main_process():
+        try:
+            best_checkpoint = torch.load(model_save_path, map_location='cpu')
+            model.load_state_dict(best_checkpoint["model_state_dict"])
+            
+            # Evaluate on test set
+            test_metrics = evaluate_on_test_set(model, test_loader, criterion, args, logger)
+            
+            # Final summary
+            logger.info("Foundation Model (Phase 1) training completed")
+            logger.info(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
+            logger.info(f"Test Precision: {test_metrics['precision']:.4f}")
+            logger.info(f"Test Recall: {test_metrics['recall']:.4f}")
+            logger.info(f"Test F1 Score: {test_metrics['f1']:.4f}")
+            logger.info(f"Test AUROC: {test_metrics['auroc']:.4f}")
+            logger.info(f"Test PR-AUC: {test_metrics['auprc']:.4f}")
+        except Exception as e:
+            logger.error(f"Error evaluating model on test set: {str(e)}")
     
     # Return best model path for Phase 2
     return model_save_path
