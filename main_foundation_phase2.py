@@ -21,7 +21,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.metrics import precision_recall_curve, roc_curve, balanced_accuracy_score
 
 def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, device):
-    """Evaluate LSTM model on test set with comprehensive metrics"""
+    """Evaluate LSTM model on test set with comprehensive metrics at the video level"""
     model.eval()
     test_loss = 0.0
     test_correct = 0
@@ -30,31 +30,26 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
     test_all_labels = []
     test_all_probs = []
     
-    logger.info("Evaluating LSTM model on test set...")
+    logger.info(f"Evaluating LSTM model on test set with {len(test_loader.dataset)} videos...")
+    
     with torch.no_grad():
-        for inputs, labels in test_loader:
+        for video_features, labels, lengths in test_loader:
             try:
-                # Handle individual feature vectors
-                if len(inputs.shape) == 2:
-                    if inputs.shape[0] == test_loader.batch_size:
-                        # Shape is [batch_size, feature_dim]
-                        inputs = inputs.unsqueeze(1)  # Reshape to [batch_size, 1, feature_dim]
-                
                 # Move data to device
-                inputs = inputs.to(device)
+                video_features = video_features.to(device)
                 labels = labels.to(device)
                 
-                # Forward pass
-                outputs = model(inputs)
+                # Forward pass - video_features should be [batch_size, seq_len, feature_dim]
+                outputs = model(video_features, lengths)
                 loss = criterion(outputs, labels)
                 
                 # Update statistics
-                test_loss += loss.item() * inputs.size(0)
+                test_loss += loss.item() * video_features.size(0)
                 _, predicted = outputs.max(1)
                 test_correct += predicted.eq(labels).sum().item()
                 test_total += labels.size(0)
                 
-                # Store predictions and labels for metrics
+                # Store predictions and labels for metrics (these are now video-level)
                 test_all_preds.extend(predicted.cpu().numpy())
                 test_all_labels.extend(labels.cpu().numpy())
                 
@@ -66,7 +61,7 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
                 logger.error(f"Error in test batch: {str(e)}")
                 continue
     
-    # Calculate metrics
+    # Calculate metrics (now at video level)
     test_loss = test_loss / test_total if test_total > 0 else float('inf')
     test_accuracy = test_correct / test_total if test_total > 0 else 0
     
@@ -100,7 +95,8 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
         test_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
     
     # Log all metrics
-    logger.info("Test Metrics:")
+    logger.info("Video-Level Test Metrics:")
+    logger.info(f"Number of videos evaluated: {test_total}")
     logger.info(f"Accuracy: {test_accuracy:.4f}")
     logger.info(f"Precision: {test_precision:.4f}")
     logger.info(f"Recall: {test_recall:.4f}")
@@ -118,8 +114,8 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
                 yticklabels=range(args.num_classes))
     plt.xlabel('Predicted')
     plt.ylabel('True')
-    plt.title('Test Set Confusion Matrix')
-    plt.savefig(os.path.join(args.log_dir, 'test_confusion_matrix_lstm.png'))
+    plt.title('Video-Level Test Set Confusion Matrix')
+    plt.savefig(os.path.join(args.log_dir, 'test_confusion_matrix_lstm_video_level.png'))
     plt.close()
     
     # For binary classification, also create ROC and PR curves
@@ -131,9 +127,9 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
         plt.plot([0, 1], [0, 1], 'k--')
         plt.xlabel('False Positive Rate')
         plt.ylabel('True Positive Rate')
-        plt.title('Test Set ROC Curve')
+        plt.title('Video-Level Test Set ROC Curve')
         plt.legend()
-        plt.savefig(os.path.join(args.log_dir, 'test_roc_curve_lstm.png'))
+        plt.savefig(os.path.join(args.log_dir, 'test_roc_curve_lstm_video_level.png'))
         plt.close()
         
         # PR Curve
@@ -142,9 +138,9 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
         plt.plot(recall, precision, label=f'PR Curve (AUPRC = {test_auprc:.4f})')
         plt.xlabel('Recall')
         plt.ylabel('Precision')
-        plt.title('Test Set Precision-Recall Curve')
+        plt.title('Video-Level Test Set Precision-Recall Curve')
         plt.legend()
-        plt.savefig(os.path.join(args.log_dir, 'test_pr_curve_lstm.png'))
+        plt.savefig(os.path.join(args.log_dir, 'test_pr_curve_lstm_video_level.png'))
         plt.close()
     
     return {
@@ -160,12 +156,14 @@ def evaluate_lstm_on_test_set(model, test_loader, criterion, args, logger, devic
         'confusion_matrix': test_cm
     }
 
-# Create LSTM model
+# Create LSTM model for video-level processing
 class FoundationLSTM(torch.nn.Module):
-    """LSTM model for processing features from foundation model"""
+    """LSTM model for processing video-level features from foundation model"""
     def __init__(self, input_size=768, hidden_size=512, num_layers=2, 
                  dropout=0.5, bidirectional=True, num_classes=2):
         super(FoundationLSTM, self).__init__()
+        
+        self.input_norm = torch.nn.LayerNorm(input_size)
         
         self.lstm = torch.nn.LSTM(
             input_size=input_size,
@@ -185,42 +183,64 @@ class FoundationLSTM(torch.nn.Module):
             torch.nn.Dropout(dropout),
             torch.nn.Linear(hidden_size, num_classes)
         )
-        
-        # Add input normalization
-        self.input_norm = torch.nn.LayerNorm(input_size)
     
-    def forward(self, x):
-        # Handle various input shapes
-        # If x is just 2D [batch_size, features], reshape it to [batch_size, 1, features]
-        if len(x.shape) == 2:
-            x = x.unsqueeze(1)
-            
-        # Normalize input features
+    def forward(self, x, lengths=None):
         batch_size, seq_len, feat_dim = x.shape
-        x = x.reshape(batch_size * seq_len, feat_dim)
-        x = self.input_norm(x)
-        x = x.reshape(batch_size, seq_len, feat_dim)
         
-        # Process sequence with LSTM
-        lstm_out, _ = self.lstm(x)
+        # Apply layer normalization
+        x_reshaped = x.reshape(batch_size * seq_len, feat_dim)
+        x_normalized = self.input_norm(x_reshaped)
+        x = x_normalized.reshape(batch_size, seq_len, feat_dim)
         
-        # Use final time step
-        final_hidden_state = lstm_out[:, -1, :]
+        if lengths is not None:
+            # Pack padded sequence
+            packed_x = torch.nn.utils.rnn.pack_padded_sequence(
+                x, lengths, batch_first=True, enforce_sorted=True
+            )
+            
+            # Process with LSTM
+            packed_output, (hidden, _) = self.lstm(packed_x)
+            
+            # Unpack
+            output, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)
+            
+            # Get final hidden state for each sequence based on actual length
+            final_hidden_states = []
+            for i, length in enumerate(lengths):
+                # For bidirectional, concatenate the final hidden states from both directions
+                if self.lstm.bidirectional:
+                    forward_hidden = hidden[-2, i, :]
+                    backward_hidden = hidden[-1, i, :]
+                    final_hidden = torch.cat([forward_hidden, backward_hidden], dim=0)
+                else:
+                    final_hidden = hidden[-1, i, :]
+                final_hidden_states.append(final_hidden)
+            
+            final_hidden = torch.stack(final_hidden_states)
+        else:
+            # Standard processing without packing
+            output, (hidden, _) = self.lstm(x)
+            
+            # For bidirectional, concatenate the final hidden states from both directions
+            if self.lstm.bidirectional:
+                final_hidden = torch.cat([hidden[-2], hidden[-1]], dim=1)
+            else:
+                final_hidden = hidden[-1]
         
         # Classification
-        logits = self.classifier(final_hidden_state)
+        logits = self.classifier(final_hidden)
         
         return logits
 
 class FeatureDataset(torch.utils.data.Dataset):
-    """Dataset for loading extracted features"""
+    """Dataset for loading extracted video-level features"""
     def __init__(self, features_dir, mode='train', logger=None, input_size=768):
         self.features_dir = Path(features_dir) / mode
         self.mode = mode
         self.logger = logger
         self.input_size = input_size
         
-        # Find all feature files
+        # Find all feature files (each file contains features for an entire video)
         self.feature_files = sorted(list(self.features_dir.glob('*.npy')))
         
         if not self.feature_files:
@@ -228,20 +248,39 @@ class FeatureDataset(torch.utils.data.Dataset):
                 logger.warning(f"No feature files found in {self.features_dir}")
         else:
             if logger:
-                logger.info(f"Found {len(self.feature_files)} feature files in {mode} split")
+                logger.info(f"Found {len(self.feature_files)} videos in {mode} split")
+            
+            # Load the expected video list from the split file for verification
+            try:
+                split_file = f"data/downstream/duhs-gss-split-5:v0/splits/{mode}.txt"
+                with open(split_file, 'r') as f:
+                    expected_count = len([line for line in f if line.strip()])
+                    if expected_count != len(self.feature_files):
+                        logger.warning(f"Warning: {mode}.txt contains {expected_count} videos but found {len(self.feature_files)} feature files")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Couldn't verify video count from split file: {str(e)}")
         
-        # Extract labels from filenames (format: index_label.npy)
+        # Extract video names and labels from filenames
+        self.video_names = []
         self.labels = []
         valid_files = []
+        
         for file_path in self.feature_files:
             try:
-                # Extract label from filename
-                label = int(file_path.stem.split('_')[-1])
+                # Extract label from filename (format: video_name_label.npy)
+                parts = file_path.stem.split('_')
+                label = int(parts[-1])  # Last part is the label
+                
+                # Video name is everything except the last part
+                video_name = "_".join(parts[:-1])
+                
+                self.video_names.append(video_name)
                 self.labels.append(label)
                 valid_files.append(file_path)
             except Exception as e:
                 if logger:
-                    logger.warning(f"Failed to parse label from {file_path.name}: {e}")
+                    logger.warning(f"Failed to parse from {file_path.name}: {e}")
         
         self.feature_files = valid_files
     
@@ -250,23 +289,23 @@ class FeatureDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, idx):
         try:
-            # Load feature
-            feature = np.load(self.feature_files[idx])
+            # Load features for the entire video
+            video_features = np.load(self.feature_files[idx])
             
             # Convert to tensor
-            feature = torch.from_numpy(feature).float()
+            video_features = torch.from_numpy(video_features).float()
             
-            # Make sure feature has correct format for LSTM: [sequence_length, feature_dim]
-            if len(feature.shape) == 1:  # Single feature vector
-                feature = feature.unsqueeze(0)  # Add sequence dimension [feature_dim] -> [1, feature_dim]
+            # Ensure shape is [seq_len, feature_dim]
+            if len(video_features.shape) == 1:
+                video_features = video_features.unsqueeze(0)
             
             # Get label
             label = self.labels[idx]
             
-            return feature, label
+            return video_features, label
         except Exception as e:
             if self.logger:
-                self.logger.error(f"Error loading feature {self.feature_files[idx]}: {e}")
+                self.logger.error(f"Error loading features from {self.feature_files[idx]}: {e}")
             
             # Return empty tensor and label as fallback
             return torch.zeros((1, self.input_size), dtype=torch.float32), self.labels[idx]
@@ -477,66 +516,132 @@ def extract_features(args, logger):
     
     # Extract features for training set
     logger.info("Extracting features for training set...")
-    extract_split_features(model, train_loader, train_dir, logger, args.num_frames)
+    extract_split_features(model, train_loader, train_dir, "train", logger, args.num_frames)
     
     # Extract features for validation set
     logger.info("Extracting features for validation set...")
-    extract_split_features(model, val_loader, val_dir, logger, args.num_frames)
+    extract_split_features(model, val_loader, val_dir, "val", logger, args.num_frames)
     
     # Extract features for test set
     logger.info("Extracting features for test set...")
-    extract_split_features(model, test_loader, test_dir, logger, args.num_frames)
+    extract_split_features(model, test_loader, test_dir, "test", logger, args.num_frames)
     
     logger.info("Feature extraction completed")
 
-def extract_split_features(model, dataloader, output_dir, logger, num_frames=8):
+def extract_split_features(model, dataloader, output_dir, split_mode, logger, num_frames=8):
     """
-    Extract features for a data split, ensuring proper shape for LSTM
-    
-    This improved version tracks features by video ID and organizes them into sequences
+    Extract features for a data split, properly grouping segments from the same video
     """
-    # Dictionary to collect features by video
-    video_features = {}
+    # Load the actual list of videos from the split file
+    split_file_path = Path(dataloader.dataset.cfg.DATA.PATH_TO_DATA_DIR) / f"{split_mode}.txt"
+    video_list = []
+    video_to_label = {}  # Map video filename to label
     
+    try:
+        with open(split_file_path, 'r') as f:
+            for line in f:
+                if line.strip():
+                    parts = line.strip().split(',')
+                    filename = parts[0]
+                    label = int(parts[1])
+                    video_list.append(filename)
+                    video_to_label[filename] = label
+        logger.info(f"Loaded {len(video_list)} videos from {split_file_path}")
+    except Exception as e:
+        logger.error(f"Error loading video list from {split_file_path}: {str(e)}")
+        video_list = []
+    
+    # Dictionary to collect features by original video name
+    video_features = {video: [] for video in video_list}
+    
+    # Map from dataset indices to original video names
+    # This is crucial for merging segments back to their original video
+    index_to_video = {}
+    
+    # First pass through the data to build the index-to-video mapping
+    logger.info("Building mapping from dataset indices to original videos...")
+    basename_to_video = {}  # Map basenames to full video names
+    for video in video_list:
+        basename = os.path.splitext(video)[0]  # Remove extension
+        basename_to_video[basename] = video
+    
+    # Process all batches to extract features
     with torch.no_grad():
         for batch_idx, (inputs, targets, indices, meta) in enumerate(tqdm(dataloader, desc="Extracting features")):
             try:
-                # Move inputs to GPU
-                inputs = inputs.cuda(non_blocking=True)
-                
-                # Get foundation model features - shape will be [batch_size, feature_dim]
-                features = model(inputs)
-                
-                # Debug the feature shape
+                # Debug metadata on first batch
                 if batch_idx == 0:
-                    logger.info(f"Foundation model output shape: {features.shape}")
+                    logger.info(f"Metadata type: {type(meta)}")
+                    for key in meta:
+                        logger.info(f"Meta key: {key}, type: {type(meta[key])}")
+                
+                # Move inputs to GPU and extract features
+                inputs = inputs.cuda(non_blocking=True)
+                features = model(inputs)
                 
                 # Process each sample in the batch
                 for i, idx in enumerate(indices):
-                    video_id = idx.item()
+                    index = idx.item()
                     label = targets[i].item()
                     
-                    # Create structured features
-                    feature_tensor = features[i].cpu().numpy()  # Single feature vector
+                    # Try to determine which original video this sample comes from
+                    video_name = None
                     
-                    # Save the feature with structured filename: {video_id}_{label}.npy
-                    np.save(output_dir / f"{video_id}_{label}.npy", feature_tensor)
-                
-                # Log progress
-                if batch_idx % 10 == 0:
-                    logger.info(f"Processed {batch_idx * dataloader.batch_size} samples")
+                    # Look for filename in metadata if available
+                    if 'path' in meta and i < len(meta['path']):
+                        path = meta['path'][i]
+                        basename = os.path.splitext(os.path.basename(path))[0]
+                        if basename in basename_to_video:
+                            video_name = basename_to_video[basename]
+                    
+                    # If not found in metadata, assign by index modulo num_videos
+                    if not video_name and video_list:
+                        video_idx = index % len(video_list)
+                        video_name = video_list[video_idx]
+                    
+                    # Record this feature with its original video
+                    if video_name in video_features:
+                        feature_tensor = features[i].cpu().numpy()
+                        video_features[video_name].append(feature_tensor)
+                    else:
+                        logger.warning(f"Could not map index {index} to a known video")
             except Exception as e:
                 logger.error(f"Error processing batch {batch_idx}: {str(e)}")
                 continue
     
-    # Count extracted features
+    # Count features collected per video
+    feature_counts = {v: len(feats) for v, feats in video_features.items()}
+    logger.info(f"Feature counts per video: min={min(feature_counts.values())}, max={max(feature_counts.values())}, avg={sum(feature_counts.values())/len(feature_counts)}")
+    
+    # Save one feature file per original video
+    logger.info(f"Saving features for {len(video_features)} videos...")
+    for video_name, features_list in video_features.items():
+        if not features_list:
+            logger.warning(f"No features collected for video {video_name}")
+            continue
+            
+        try:
+            # Stack features for this video into a single array [num_segments, feature_dim]
+            video_feature_array = np.stack(features_list, axis=0)
+            
+            # Save with video name and label
+            label = video_to_label.get(video_name, 0)
+            safe_name = ''.join(e for e in video_name if e.isalnum() or e == '_').strip('_')
+            np.save(output_dir / f"{safe_name}_{label}.npy", video_feature_array)
+        except Exception as e:
+            logger.error(f"Error saving features for video {video_name}: {str(e)}")
+    
+    # Verify feature count
     feature_count = len(list(output_dir.glob('*.npy')))
-    logger.info(f"Extracted {feature_count} features")
+    logger.info(f"Extracted and saved features for {feature_count} videos")
+    
+    if len(video_list) != feature_count:
+        logger.warning(f"Warning: Expected {len(video_list)} videos but saved {feature_count} feature files")
 
 def train_lstm(args, logger):
-    """Train LSTM on extracted features"""
+    """Train LSTM on extracted video-level features"""
     
-    logger.info("Starting LSTM training...")
+    logger.info("Starting LSTM training on video-level features...")
     
     # Set random seeds
     random.seed(args.seed)
@@ -576,33 +681,66 @@ def train_lstm(args, logger):
     test_dir = Path(args.features_dir) / 'test'
     if test_dir.exists() and len(list(test_dir.glob('*.npy'))) > 0:
         test_dataset = FeatureDataset(args.features_dir, mode='test', logger=logger, input_size=args.input_size)
-        logger.info(f"Using separate test dataset with {len(test_dataset)} samples")
+        logger.info(f"Using separate test dataset with {len(test_dataset)} videos")
     else:
         test_dataset = val_dataset
         logger.info("Using validation dataset as test dataset")
     
     # Check if we have valid datasets
     if len(train_dataset) == 0:
-        logger.error("No training samples found. Make sure feature extraction worked correctly.")
+        logger.error("No training videos found. Make sure feature extraction worked correctly.")
         return None
     
     if len(val_dataset) == 0:
-        logger.error("No validation samples found. Make sure feature extraction worked correctly.")
+        logger.error("No validation videos found. Make sure feature extraction worked correctly.")
         return None
     
     # Log a sample feature shape to help debugging
     if len(train_dataset) > 0:
-        sample_feature, _ = train_dataset[0]
-        logger.info(f"Sample feature shape: {sample_feature.shape}")
+        sample_features, _ = train_dataset[0]
+        logger.info(f"Sample video features shape: {sample_features.shape}")
     
-    # Create dataloaders
+    # Custom collate function to handle variable-length sequences
+    def collate_variable_length_sequences(batch):
+        # Sort batch by sequence length (descending)
+        batch.sort(key=lambda x: x[0].shape[0], reverse=True)
+        
+        # Get sequences and labels
+        sequences, labels = zip(*batch)
+        
+        # Get sequence lengths
+        lengths = [seq.shape[0] for seq in sequences]
+        max_length = max(lengths)
+        
+        # Pad sequences to max length in batch
+        padded_sequences = []
+        for seq in sequences:
+            padding_length = max_length - seq.shape[0]
+            if padding_length > 0:
+                # Pad with zeros
+                padded_seq = torch.cat([
+                    seq, 
+                    torch.zeros((padding_length, seq.shape[1]), dtype=seq.dtype)
+                ], dim=0)
+                padded_sequences.append(padded_seq)
+            else:
+                padded_sequences.append(seq)
+        
+        # Stack into batch
+        padded_batch = torch.stack(padded_sequences)
+        labels_batch = torch.tensor(labels)
+        
+        return padded_batch, labels_batch, lengths
+    
+    # Create dataloaders with custom collate function
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=False
+        drop_last=False,
+        collate_fn=collate_variable_length_sequences
     )
     
     val_loader = torch.utils.data.DataLoader(
@@ -611,10 +749,12 @@ def train_lstm(args, logger):
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=False
+        drop_last=False,
+        collate_fn=collate_variable_length_sequences
     )
     
     logger.info(f"Created dataloaders with {len(train_loader)} train batches and {len(val_loader)} val batches")
+    logger.info(f"Training on {len(train_dataset)} videos, validating on {len(val_dataset)} videos")
     
     # Create LSTM model
     logger.info(f"Creating LSTM model with input_size={args.input_size}, hidden_size={args.hidden_size}")
@@ -666,7 +806,7 @@ def train_lstm(args, logger):
     
     # Initialize training variables
     best_val_f1 = 0.0
-    best_val_auprc = 0.0  # Also track AUPRC
+    best_val_auprc = 0.0
     patience_counter = 0
     
     # Initialize history
@@ -678,7 +818,7 @@ def train_lstm(args, logger):
         'train_f1': [],
         'val_f1': [],
         'val_auroc': [],
-        'val_auprc': [],  # Add AUPRC tracking
+        'val_auprc': [],
         'val_confusion_matrix': []
     }
     
@@ -696,25 +836,14 @@ def train_lstm(args, logger):
         train_all_preds = []
         train_all_labels = []
         
-        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]"):
+        for video_features, labels, lengths in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]"):
             try:
-                # Debug information - log input shape
-                if len(inputs.shape) != 3:
-                    logger.info(f"Input shape before reshaping: {inputs.shape}")
-                    
-                    # Handle individual feature vectors by adding sequence dimension
-                    if len(inputs.shape) == 2:
-                        if inputs.shape[0] == args.batch_size:
-                            # Shape is [batch_size, feature_dim]
-                            inputs = inputs.unsqueeze(1)  # Reshape to [batch_size, 1, feature_dim]
-                            logger.info(f"Reshaped inputs to: {inputs.shape}")
-                
                 # Move data to device
-                inputs = inputs.to(device)
+                video_features = video_features.to(device)
                 labels = labels.to(device)
                 
-                # Forward pass
-                outputs = model(inputs)
+                # Forward pass with sequence lengths
+                outputs = model(video_features, lengths)
                 loss = criterion(outputs, labels)
                 
                 # Backward pass and optimize
@@ -723,7 +852,7 @@ def train_lstm(args, logger):
                 optimizer.step()
                 
                 # Update statistics
-                train_loss += loss.item() * inputs.size(0)
+                train_loss += loss.item() * labels.size(0)
                 _, predicted = outputs.max(1)
                 train_correct += predicted.eq(labels).sum().item()
                 train_total += labels.size(0)
@@ -757,24 +886,18 @@ def train_lstm(args, logger):
         val_all_probs = []
         
         with torch.no_grad():
-            for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Val]"):
+            for video_features, labels, lengths in tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Val]"):
                 try:
-                    # Handle individual feature vectors
-                    if len(inputs.shape) == 2:
-                        if inputs.shape[0] == args.batch_size:
-                            # Shape is [batch_size, feature_dim]
-                            inputs = inputs.unsqueeze(1)  # Reshape to [batch_size, 1, feature_dim]
-                    
                     # Move data to device
-                    inputs = inputs.to(device)
+                    video_features = video_features.to(device)
                     labels = labels.to(device)
                     
-                    # Forward pass
-                    outputs = model(inputs)
+                    # Forward pass with sequence lengths
+                    outputs = model(video_features, lengths)
                     loss = criterion(outputs, labels)
                     
                     # Update statistics
-                    val_loss += loss.item() * inputs.size(0)
+                    val_loss += loss.item() * labels.size(0)
                     _, predicted = outputs.max(1)
                     val_correct += predicted.eq(labels).sum().item()
                     val_total += labels.size(0)
@@ -833,7 +956,7 @@ def train_lstm(args, logger):
         history['train_f1'].append(train_f1)
         history['val_f1'].append(val_f1)
         history['val_auroc'].append(val_auroc)
-        history['val_auprc'].append(val_auprc)  # Track AUPRC
+        history['val_auprc'].append(val_auprc)
         history['val_confusion_matrix'].append(val_cm.tolist())
         
         # Log epoch results
@@ -843,7 +966,7 @@ def train_lstm(args, logger):
         
         if args.num_classes == 2:
             logger.info(f"Val AUROC: {val_auroc:.4f}, Val Specificity: {val_specificity:.4f}, "
-                        f"Val Sensitivity: {val_sensitivity:.4f}, Val AUPRC: {val_auprc:.4f}")  # Log AUPRC
+                        f"Val Sensitivity: {val_sensitivity:.4f}, Val AUPRC: {val_auprc:.4f}")
         
         # Log to WandB
         if args.use_wandb:
@@ -863,7 +986,7 @@ def train_lstm(args, logger):
                     'val_auroc': val_auroc,
                     'val_specificity': val_specificity,
                     'val_sensitivity': val_sensitivity,
-                    'val_auprc': val_auprc  # Add AUPRC to WandB
+                    'val_auprc': val_auprc
                 })
                 
                 # Add confusion matrix to WandB
@@ -910,7 +1033,7 @@ def train_lstm(args, logger):
                     'val_acc': val_acc,
                     'val_f1': val_f1,
                     'val_auroc': val_auroc,
-                    'val_auprc': val_auprc,  # Save AUPRC
+                    'val_auprc': val_auprc,
                     'history': history,
                     'args': vars(args)
                 }, model_save_path)
@@ -923,7 +1046,7 @@ def train_lstm(args, logger):
                             yticklabels=range(args.num_classes))
                 plt.xlabel('Predicted')
                 plt.ylabel('True')
-                plt.title(f'Confusion Matrix - Epoch {epoch+1}')
+                plt.title(f'Video-Level Confusion Matrix - Epoch {epoch+1}')
                 plt.savefig(os.path.join(args.log_dir, f'confusion_matrix_epoch_{epoch+1}.png'))
                 plt.close()
         else:
@@ -979,7 +1102,8 @@ def train_lstm(args, logger):
             shuffle=False,
             num_workers=args.num_workers,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            collate_fn=collate_variable_length_sequences
         )
         
         # Evaluate on test set
