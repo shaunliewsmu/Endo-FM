@@ -196,6 +196,8 @@ def parse_args():
                       help='Number of classes')
     parser.add_argument('--pretrained_weights', type=str, required=True,
                       help='Path to pretrained weights')
+    parser.add_argument('--scratch', action='store_true',
+                      help='Enable frame adaptation for pretrained weights with different frame counts')
     
     # Loss function arguments
     parser.add_argument('--loss_type', type=str, default='cross_entropy',
@@ -349,6 +351,66 @@ def main():
         # Extract backbone weights
         renamed_checkpoint = {x[len("backbone."):]: y for x, y in checkpoint.items() 
                              if x.startswith("backbone.")}
+        
+        # Check if --scratch flag is enabled or we're using different frame counts
+        if args.scratch:
+            logger.info("Scratch mode enabled - checking for time embedding adaptation needs")
+            
+            # Check for time_embed size mismatch and adapt if necessary
+            if 'time_embed' in renamed_checkpoint:
+                pretrained_time_embed = renamed_checkpoint['time_embed']
+                current_time_frames = args.num_frames
+                pretrained_time_frames = pretrained_time_embed.shape[1]
+                
+                if current_time_frames != pretrained_time_frames:
+                    logger.info(f"Adapting time_embed from {pretrained_time_frames} frames to {current_time_frames} frames")
+                    
+                    # Common variables for both cases
+                    channels = pretrained_time_embed.shape[2]
+                    
+                    # Handle time embedding mismatch
+                    if current_time_frames > pretrained_time_frames:
+                        # Expand by repeating the pattern and interpolating (upsampling)
+                        expanded_time_embed = torch.zeros((1, current_time_frames, channels))
+                        
+                        # Linear interpolation of time embeddings to new size
+                        for c in range(channels):
+                            # Extract 1D signal for this channel
+                            signal = pretrained_time_embed[0, :, c].numpy()
+                            # Create interpolator
+                            from scipy import interpolate
+                            x_original = np.linspace(0, 1, pretrained_time_frames)
+                            x_new = np.linspace(0, 1, current_time_frames)
+                            f = interpolate.interp1d(x_original, signal, kind='linear')
+                            # Interpolate to get new signal
+                            new_signal = f(x_new)
+                            # Store in expanded tensor
+                            expanded_time_embed[0, :, c] = torch.tensor(new_signal)
+                        
+                        # Replace with expanded version
+                        renamed_checkpoint['time_embed'] = expanded_time_embed
+                        logger.info(f"Expanded time_embed to {expanded_time_embed.shape}")
+                    else:
+                        # Downsample by interpolation (reducing frames)
+                        contracted_time_embed = torch.zeros((1, current_time_frames, channels))
+                        
+                        # Linear interpolation to fewer frames
+                        for c in range(channels):
+                            # Extract 1D signal for this channel
+                            signal = pretrained_time_embed[0, :, c].numpy()
+                            # Create interpolator
+                            from scipy import interpolate
+                            x_original = np.linspace(0, 1, pretrained_time_frames)
+                            x_new = np.linspace(0, 1, current_time_frames)
+                            f = interpolate.interp1d(x_original, signal, kind='linear')
+                            # Interpolate to get new signal
+                            new_signal = f(x_new)
+                            # Store in contracted tensor
+                            contracted_time_embed[0, :, c] = torch.tensor(new_signal)
+                        
+                        # Replace with contracted version
+                        renamed_checkpoint['time_embed'] = contracted_time_embed
+                        logger.info(f"Contracted time_embed from {pretrained_time_embed.shape} to {contracted_time_embed.shape}")
         
         msg = model.load_state_dict(renamed_checkpoint, strict=False)
         logger.info(f"Loaded pretrained weights with message: {msg}")

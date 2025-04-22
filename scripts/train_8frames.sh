@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # Script for training with custom sampling and focal loss - with fixed seed for reproducibility
-EXP_NAME="new-endo-fm-balanced-fine-tune-uniform-focal-1-05-training-32"
+EXP_NAME="new-endo-fm-balanced-fine-tune-random-focal-1-05-training-8"
 DATASET="ucf101"
 DATA_PATH="data/downstream/balanced-dataset"
+
 # DATA_PATH="data/downstream/bagls-split:v0"
-CHECKPOINT="checkpoints/new-endo-fm-bagls-uniform-focal-1-05-training-32/checkpoint.pth.tar"
 # CHECKPOINT="checkpoints/endo_fm.pth"
+CHECKPOINT="checkpoints/new-endo-fm-bagls-random-focal-1-05-training-8/checkpoint.pth.tar"
 if [ ! -d "checkpoints/$EXP_NAME" ]; then
   mkdir -p "checkpoints/$EXP_NAME"
 fi
@@ -30,14 +31,13 @@ python -m torch.distributed.launch \
   --num_labels 2 \
   --dataset "$DATASET" \
   --output_dir "checkpoints/$EXP_NAME" \
-  --train_sampling "uniform" \
-  --val_sampling "uniform" \
-  --test_sampling "uniform" \
-  --num_frames 32 \
+  --train_sampling "random" \
+  --val_sampling "random" \
+  --test_sampling "random" \
+  --num_frames 8 \
   --loss_function "focal_loss" \
   --focal_gamma 1 \
   --focal_alpha 0.5 \
-  --scratch \
   --seed 42 \
   --opts \
   DATA.PATH_TO_DATA_DIR "${DATA_PATH}/splits" \
