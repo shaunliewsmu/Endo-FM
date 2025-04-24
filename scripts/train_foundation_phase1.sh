@@ -1,9 +1,9 @@
 #!/bin/bash
 # scripts/train_foundation_phase1.sh
 # Set CUDA device
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 # Configuration
-EXP_NAME="foundation_phase1_uniform"
+EXP_NAME="foundation_phase1_random"
 DATASET="ucf101"
 DATA_PATH="data/downstream/balanced-dataset"
 CHECKPOINT="checkpoints/endo_fm.pth"
@@ -32,9 +32,9 @@ python -m torch.distributed.launch \
   --data_dir "$DATA_PATH" \
   --log_dir "logs/$EXP_NAME" \
   --model_dir "models/$EXP_NAME" \
-  --train_sampling "uniform" \
-  --val_sampling "uniform" \
-  --test_sampling "uniform" \
+  --train_sampling "random" \
+  --val_sampling "random" \
+  --test_sampling "random" \
   --num_frames 32 \
   --batch_size 2 \
   --num_workers 0 \

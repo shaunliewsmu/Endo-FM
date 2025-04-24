@@ -333,6 +333,8 @@ def parse_args():
                       help='Sampling method for feature extraction')
     parser.add_argument('--num_frames', type=int, default=8,
                       help='Number of frames to sample per video')
+    parser.add_argument('--scratch', action='store_true',
+                      help='Enable frame adaptation for pretrained weights with different frame counts')
     
     # LSTM arguments
     parser.add_argument('--input_size', type=int, default=768,
@@ -499,6 +501,66 @@ def extract_features(args, logger):
                 checkpoint = {k[len('backbone.'):]: v for k, v in checkpoint.items() 
                              if k.startswith('backbone.')}
             
+            # Adapt time embeddings if necessary when using --scratch flag
+            if args.scratch:
+                logger.info("Scratch mode enabled - checking for time embedding adaptation needs")
+                
+                # Check for time_embed size mismatch and adapt if necessary
+                if 'time_embed' in checkpoint:
+                    pretrained_time_embed = checkpoint['time_embed']
+                    current_time_frames = args.num_frames
+                    pretrained_time_frames = pretrained_time_embed.shape[1]
+                    
+                    if current_time_frames != pretrained_time_frames:
+                        logger.info(f"Adapting time_embed from {pretrained_time_frames} frames to {current_time_frames} frames")
+                        
+                        # Common variables for both cases
+                        channels = pretrained_time_embed.shape[2]
+                        
+                        # Handle time embedding mismatch
+                        if current_time_frames > pretrained_time_frames:
+                            # Expand by repeating the pattern and interpolating (upsampling)
+                            expanded_time_embed = torch.zeros((1, current_time_frames, channels))
+                            
+                            # Linear interpolation of time embeddings to new size
+                            for c in range(channels):
+                                # Extract 1D signal for this channel
+                                signal = pretrained_time_embed[0, :, c].numpy()
+                                # Create interpolator
+                                from scipy import interpolate
+                                x_original = np.linspace(0, 1, pretrained_time_frames)
+                                x_new = np.linspace(0, 1, current_time_frames)
+                                f = interpolate.interp1d(x_original, signal, kind='linear')
+                                # Interpolate to get new signal
+                                new_signal = f(x_new)
+                                # Store in expanded tensor
+                                expanded_time_embed[0, :, c] = torch.tensor(new_signal)
+                            
+                            # Replace with expanded version
+                            checkpoint['time_embed'] = expanded_time_embed
+                            logger.info(f"Expanded time_embed to {expanded_time_embed.shape}")
+                        else:
+                            # Downsample by interpolation (reducing frames)
+                            contracted_time_embed = torch.zeros((1, current_time_frames, channels))
+                            
+                            # Linear interpolation to fewer frames
+                            for c in range(channels):
+                                # Extract 1D signal for this channel
+                                signal = pretrained_time_embed[0, :, c].numpy()
+                                # Create interpolator
+                                from scipy import interpolate
+                                x_original = np.linspace(0, 1, pretrained_time_frames)
+                                x_new = np.linspace(0, 1, current_time_frames)
+                                f = interpolate.interp1d(x_original, signal, kind='linear')
+                                # Interpolate to get new signal
+                                new_signal = f(x_new)
+                                # Store in contracted tensor
+                                contracted_time_embed[0, :, c] = torch.tensor(new_signal)
+                            
+                            # Replace with contracted version
+                            checkpoint['time_embed'] = contracted_time_embed
+                            logger.info(f"Contracted time_embed from {pretrained_time_embed.shape} to {contracted_time_embed.shape}")
+            
             msg = model.load_state_dict(checkpoint, strict=False)
             logger.info(f"Loaded foundation model with message: {msg}")
         else:
@@ -611,7 +673,9 @@ def extract_split_features(model, dataloader, output_dir, split_mode, logger, nu
     
     # Count features collected per video
     feature_counts = {v: len(feats) for v, feats in video_features.items()}
-    logger.info(f"Feature counts per video: min={min(feature_counts.values())}, max={max(feature_counts.values())}, avg={sum(feature_counts.values())/len(feature_counts)}")
+    logger.info(f"Feature counts per video: min={min(feature_counts.values()) if feature_counts else 0}, " +
+                f"max={max(feature_counts.values()) if feature_counts else 0}, " +
+                f"avg={sum(feature_counts.values())/len(feature_counts) if feature_counts else 0}")
     
     # Save one feature file per original video
     logger.info(f"Saving features for {len(video_features)} videos...")
