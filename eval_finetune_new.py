@@ -177,10 +177,12 @@ def eval_finetune(args):
             if current_time_frames != pretrained_time_frames:
                 print(f"Adapting time_embed from {pretrained_time_frames} frames to {current_time_frames} frames")
                 
+                # Common variables for both cases
+                channels = pretrained_time_embed.shape[2]
+                
                 # Handle time embedding mismatch
                 if current_time_frames > pretrained_time_frames:
-                    # Expand by repeating the pattern and interpolating
-                    channels = pretrained_time_embed.shape[2]
+                    # Expand by repeating the pattern and interpolating (upsampling)
                     expanded_time_embed = torch.zeros((1, current_time_frames, channels))
                     
                     # Linear interpolation of time embeddings to new size
@@ -200,6 +202,27 @@ def eval_finetune(args):
                     # Replace with expanded version
                     renamed_checkpoint['time_embed'] = expanded_time_embed
                     print(f"Expanded time_embed to {expanded_time_embed.shape}")
+                else:
+                    # Downsample by interpolation (reducing frames)
+                    contracted_time_embed = torch.zeros((1, current_time_frames, channels))
+                    
+                    # Linear interpolation to fewer frames
+                    for c in range(channels):
+                        # Extract 1D signal for this channel
+                        signal = pretrained_time_embed[0, :, c].numpy()
+                        # Create interpolator
+                        from scipy import interpolate
+                        x_original = np.linspace(0, 1, pretrained_time_frames)
+                        x_new = np.linspace(0, 1, current_time_frames)
+                        f = interpolate.interp1d(x_original, signal, kind='linear')
+                        # Interpolate to get new signal
+                        new_signal = f(x_new)
+                        # Store in contracted tensor
+                        contracted_time_embed[0, :, c] = torch.tensor(new_signal)
+                    
+                    # Replace with contracted version
+                    renamed_checkpoint['time_embed'] = contracted_time_embed
+                    print(f"Contracted time_embed from {pretrained_time_embed.shape} to {contracted_time_embed.shape}")
 
         # Now load the model with the potentially modified checkpoint
         msg = model.load_state_dict(renamed_checkpoint, strict=False)
@@ -316,31 +339,16 @@ def eval_finetune(args):
     best_combined_score = to_restore.get("best_combined_score", 0.0)
     best_epoch = start_epoch - 1  # Track the epoch with the best performance
 
-    exploration_frequency = 5  # Try a fresh exploration every 5 epochs
+    # Using continuous training approach like ViViT (no exploration-exploitation cycle)
     best_checkpoint_path = os.path.join(args.output_dir, "checkpoint.pth.tar")
-    logger.info(f"Will reload best checkpoint every {exploration_frequency} epochs")
+    logger.info("Using continuous training approach (no reload of best model during training)")
     
     for epoch in range(start_epoch, args.epochs):
-        # Determine if this should be an exploration epoch
-        is_exploration_epoch = (epoch % exploration_frequency == 0)
-        
-        # Reload the best model checkpoint if it exists (after epoch 0) and not in exploration mode
-        if epoch > 0 and os.path.exists(best_checkpoint_path) and not is_exploration_epoch:
-            logger.info(f"Reloading best model before starting epoch {epoch}")
-            checkpoint = torch.load(best_checkpoint_path, map_location='cpu')
-            
-            # Load model and classifier weights
-            model.load_state_dict(checkpoint["backbone_state_dict"])
-            linear_classifier.load_state_dict(checkpoint["state_dict"])
-            
-            # Don't reset optimizer and scheduler to maintain learning rate progression
-            
-            logger.info(f"Continuing training from best model (specificity: {checkpoint.get('best_specificity', 0):.4f}, F1: {checkpoint.get('best_f1', 0):.4f})")
-        elif is_exploration_epoch:
-            logger.info(f"Exploration epoch {epoch}: Continuing with current model state without reloading best checkpoint")
-        
         # Set the epoch for the data sampler
         train_loader.sampler.set_epoch(epoch)
+    
+        # Use continuous training like ViViT (no model reloading during training)
+        logger.info(f"Epoch {epoch}: Continuing with current model state")
         
         # Train for one epoch
         train_stats = train(args, model, linear_classifier, criterion, optimizer, train_loader, epoch, args.n_last_blocks, args.avgpool_patchtokens)
