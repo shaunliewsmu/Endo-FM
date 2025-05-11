@@ -11,7 +11,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 import random
-
+import cv2
+import types
+# Add this to the top of your file
+from utils.augmentation_helper import (
+    setup_augmentation_for_dataset, 
+    get_augmented_item, 
+    get_sampling_indices,
+    save_sampling_indices
+)
 from sklearn.metrics import f1_score, roc_auc_score, precision_recall_curve, auc, confusion_matrix, average_precision_score
 
 from datasets import UCF101, HMDB51, Kinetics
@@ -72,17 +80,36 @@ def eval_finetune(args):
     config.DATA.NUM_FRAMES = args.num_frames
     config.DATA.SEED = 42  # Fixed seed for reproducibility
     config.DATA.CSV_SAVE_DIR = sampling_csv_dir
+
+    # config.DATA.register_deprecated("AUGMENT", False)
+    # config.DATA.register_deprecated("MAX_AUG_ROUNDS", None)
+    # config.DATA.register_deprecated("AUG_STEP_SIZE", 1)
+    # Add augmentation parameters to config
+    config.DATA.AUGMENT = args.augment
+    config.DATA.MAX_AUG_ROUNDS = args.max_aug_rounds
+    config.DATA.AUG_STEP_SIZE = args.aug_step_size
+
     global_logger = logger
     
     datasets = {}
     
     if args.dataset == "ucf101":
-        # Initialize with sampling tracker
+       # Initialize with sampling tracker and augmentation support
         dataset_train = UCF101(cfg=config, mode="train", num_retries=10)
         if hasattr(dataset_train, 'init_sampler'):
-            dataset_train.init_sampler(sampling_csv_dir, global_logger, "ucf101", "train", args.train_sampling)
+            dataset_train.init_sampler(
+                sampling_csv_dir, 
+                global_logger, 
+                "ucf101", 
+                "train", 
+                args.train_sampling,
+                augment=config.DATA.AUGMENT,
+                max_aug_rounds=config.DATA.MAX_AUG_ROUNDS,
+                aug_step_size=config.DATA.AUG_STEP_SIZE
+            )
         datasets['train'] = dataset_train
-            
+
+        # For validation dataset (no augmentation)    
         dataset_val = UCF101(cfg=config, mode="val", num_retries=10)
         if hasattr(dataset_val, 'init_sampler'):
             dataset_val.init_sampler(sampling_csv_dir, global_logger, "ucf101", "val", args.val_sampling)
@@ -92,7 +119,16 @@ def eval_finetune(args):
     elif args.dataset == "hmdb51":
         dataset_train = HMDB51(cfg=config, mode="train", num_retries=10)
         if hasattr(dataset_train, 'init_sampler'):
-            dataset_train.init_sampler(sampling_csv_dir, global_logger, "hmdb51", "train", args.train_sampling)
+            dataset_train.init_sampler(
+                sampling_csv_dir, 
+                global_logger, 
+                "hmdb51", 
+                "train", 
+                args.train_sampling,
+                augment=config.DATA.AUGMENT,
+                max_aug_rounds=config.DATA.MAX_AUG_ROUNDS,
+                aug_step_size=config.DATA.AUG_STEP_SIZE
+            )
         datasets['train'] = dataset_train
             
         dataset_val = HMDB51(cfg=config, mode="val", num_retries=10)
@@ -101,10 +137,20 @@ def eval_finetune(args):
         datasets['val'] = dataset_val
             
         config.TEST.NUM_SPATIAL_CROPS = 3
+
     elif args.dataset == "kinetics400":
         dataset_train = Kinetics(cfg=config, mode="train", num_retries=10)
         if hasattr(dataset_train, 'init_sampler'):
-            dataset_train.init_sampler(sampling_csv_dir, global_logger, "kinetics400", "train", args.train_sampling)
+            dataset_train.init_sampler(
+                sampling_csv_dir, 
+                global_logger, 
+                "kinetics400", 
+                "train", 
+                args.train_sampling,
+                augment=config.DATA.AUGMENT,
+                max_aug_rounds=config.DATA.MAX_AUG_ROUNDS,
+                aug_step_size=config.DATA.AUG_STEP_SIZE
+            )
         datasets['train'] = dataset_train
             
         dataset_val = Kinetics(cfg=config, mode="val", num_retries=10)
@@ -116,24 +162,88 @@ def eval_finetune(args):
     else:
         raise NotImplementedError(f"invalid dataset: {args.dataset}")
 
-    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset_train, shuffle=True)
+    # Add this immediately after your dataset initialization code
+    if config.DATA.AUGMENT:
+        logger.info("Setting up data augmentation...")
+        # Create directory for sampling indices CSVs
+        csv_save_dir = os.path.join(args.output_dir, 'sampling_indices')
+        os.makedirs(csv_save_dir, exist_ok=True)
+        
+        # Dataset augmentation is already handled by the init_sampler call
+        train_dataset = datasets['train']
+        
+        # Calculate expected length for later reference
+        expected_len = train_dataset.original_length + len(train_dataset.aug_video_map)
+        
+        # Verify the dataset length
+        logger.info(f"Dataset length check: {len(train_dataset)} samples")
+        
+        # Validate augmentation by checking a few samples
+        logger.info("Validating augmentation with sample indices:")
+        for i in range(min(3, train_dataset.original_length)):
+            try:
+                # Get video information
+                video_path = train_dataset.original_video_paths[i]
+                import cv2
+                cap = cv2.VideoCapture(video_path)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.release()
+                
+                # Get original indices
+                orig_indices = train_dataset._get_sampling_indices(total_frames, i, None)
+                
+                logger.info(f"Video {i}: {os.path.basename(video_path)}")
+                logger.info(f"  Original indices: {orig_indices[:5]}...")
+                
+                # If augmentation is enabled, show example of augmented indices
+                if len(train_dataset.aug_video_map) > 0:
+                    # Find the first augmentation for this video
+                    for aug_idx, (video_idx, aug_round) in enumerate(train_dataset.aug_video_map):
+                        if video_idx == i:
+                            aug_indices = train_dataset._get_sampling_indices(total_frames, i, aug_round)
+                            
+                            # Compare original and augmented indices
+                            diff_count = sum(1 for orig, aug in zip(orig_indices, aug_indices) if orig != aug)
+                            
+                            logger.info(f"  Augmented indices (round {aug_round}): {aug_indices[:5]}...")
+                            logger.info(f"  Differences: {diff_count}/{len(orig_indices)} frames are different")
+                            break
+            except Exception as e:
+                logger.error(f"Error validating augmentation for video {i}: {str(e)}")
+
+    # Now create DataLoaders AFTER all augmentation setup
+    train_sampler = torch.utils.data.distributed.DistributedSampler(datasets['train'], shuffle=True)
     train_loader = torch.utils.data.DataLoader(
-        dataset_train,
+        datasets['train'],
         sampler=train_sampler,
         batch_size=args.batch_size_per_gpu,
         num_workers=args.num_workers,
         pin_memory=True,
     )
     val_loader = torch.utils.data.DataLoader(
-        dataset_val,
+        datasets['val'],
         batch_size=args.batch_size_per_gpu,
         num_workers=args.num_workers,
         pin_memory=True,
         shuffle=False
     )
 
-    print(f"Data loaded with {len(dataset_train)} train and {len(dataset_val)} val imgs.")
+    # Check the final dataset length
+    final_train_len = len(datasets['train'])
+    if 'expected_len' not in locals():
+        expected_len = final_train_len
+    logger.info(f"Final dataset length check: {final_train_len} samples (expecting {expected_len})")
+    logger.info(f"Final dataset length check: {final_train_len} samples (expecting {expected_len})")
+
+    print(f"Data loaded with {final_train_len} train and {len(datasets['val'])} val imgs.")
     print(f"Using sampling methods: Train={args.train_sampling}, Val={args.val_sampling}, Test={args.test_sampling}")
+    if config.DATA.AUGMENT:
+        print(f"Data augmentation enabled for training with step size {config.DATA.AUG_STEP_SIZE}")
+        print(f"Augmented dataset: {train_dataset.original_length} original + {len(train_dataset.aug_video_map)} augmented samples")
+        if config.DATA.MAX_AUG_ROUNDS:
+            print(f"Maximum augmentation rounds: {config.DATA.MAX_AUG_ROUNDS}")
+        else:
+            print("Maximum augmentation rounds calculated based on video length")
 
     # Save sampling indices after initial data loading
     save_all_sampling_indices(datasets, args.output_dir)
@@ -908,6 +1018,14 @@ if __name__ == '__main__':
     parser.add_argument('--focal_alpha', default=0.25, type=float,
                         help='Alpha parameter for focal loss (addresses class imbalance)')
     
+    # Data Augmentation
+    parser.add_argument('--augment', action='store_true',
+                    help='Enable data augmentation for training')
+    parser.add_argument('--max_aug_rounds', type=int, default=None,
+                        help='Maximum number of augmentation rounds (default: auto-calculate based on video length)')
+    parser.add_argument('--aug_step_size', type=int, default=1,
+                        help='Step size for augmentation rounds (e.g., 2 will use rounds 1,3,5... instead of 1,2,3...)')
+
     # Add seed argument - default to 42 for reproducibility
     parser.add_argument('--seed', default=42, type=int,
                         help='Random seed for reproducibility')

@@ -66,7 +66,7 @@ def create_comparison_plots(key, files, output_dir):
         # Calculate normalized frame positions
         all_positions = []
         for _, row in df.iterrows():
-            indices = [int(idx) for idx in row['sampled_indices'].split(',')]
+            indices = [int(idx) for idx in row['indices'].split(',')]
             total_frames = row['total_frames']
             # Normalize to [0, 1] range
             normalized = [idx / total_frames for idx in indices]
@@ -94,7 +94,7 @@ def create_comparison_plots(key, files, output_dir):
         # Calculate average coverage
         coverages = []
         for _, row in df.iterrows():
-            indices = [int(idx) for idx in row['sampled_indices'].split(',')]
+            indices = [int(idx) for idx in row['indices'].split(',')]
             total_frames = row['total_frames']
             
             # Calculate coverage (how evenly distributed are the frames)

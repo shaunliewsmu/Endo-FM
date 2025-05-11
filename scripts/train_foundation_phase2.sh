@@ -1,14 +1,14 @@
 #!/bin/bash
 # scripts/train_foundation_phase2.sh
 # Set CUDA device
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 # Configuration
-EXP_NAME="foundation_phase2_random"
+EXP_NAME="foundation_phase2_uniform_fine_tune"
 DATASET="ucf101"
 DATA_PATH="data/downstream/balanced-dataset"
 # FOUNDATION_CHECKPOINT="checkpoints/endo_fm.pth"  # Use foundation model directly
-FOUNDATION_CHECKPOINT="models/foundation_phase1_random/foundation_model_20250422_174016.pth"  # Use fine-tuned model if available
-FEATURES_DIR="features/foundation_model_random"
+FOUNDATION_CHECKPOINT="models/foundation_phase1_uniform_fine_tune/foundation_model_20250428_103341.pth"  # Use fine-tuned model if available
+FEATURES_DIR="features/foundation_model_uniform"
 
 # Create directories
 mkdir -p logs/$EXP_NAME
@@ -24,7 +24,7 @@ python main_foundation_phase2.py \
   --model_dir "models/$EXP_NAME" \
   --foundation_checkpoint "$FOUNDATION_CHECKPOINT" \
   --extract_features \
-  --sampling_method "random" \
+  --sampling_method "uniform" \
   --num_frames 32 \
   --input_size 768 \
   --hidden_size 512 \
