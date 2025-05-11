@@ -208,6 +208,14 @@ def parse_args():
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                       help='Gamma parameter for Focal Loss')
     
+    # Data augmentation arguments
+    parser.add_argument('--augment', action='store_true',
+                      help='Enable data augmentation for training')
+    parser.add_argument('--max_aug_rounds', type=int, default=None,
+                      help='Maximum number of augmentation rounds (default: auto-calculate based on video length)')
+    parser.add_argument('--aug_step_size', type=int, default=1,
+                      help='Step size for augmentation rounds (e.g., 2 will use rounds 1,3,5... instead of 1,2,3...)')
+    
     # Evaluation arguments
     parser.add_argument('--skip_train', action='store_true',
                       help='Skip training and only evaluate')
@@ -230,6 +238,16 @@ def parse_args():
     parser.add_argument("--opts", help="See utils/defaults.py for all options", default=None, nargs=argparse.REMAINDER)
     
     return parser.parse_args()
+
+def save_all_sampling_indices(datasets, output_dir):
+    """Save sampling indices for all datasets."""
+    for split, dataset in datasets.items():
+        if hasattr(dataset, 'save_sampling_indices'):
+            try:
+                dataset.save_sampling_indices()
+                print(f"Saved sampling indices for {split} dataset")
+            except Exception as e:
+                print(f"Error saving sampling indices for {split} dataset: {str(e)}")
 
 def main():
     # Parse arguments
@@ -285,19 +303,46 @@ def main():
     config.DATA.VAL_SAMPLING_METHOD = args.val_sampling
     config.DATA.TEST_SAMPLING_METHOD = args.test_sampling
     config.DATA.NUM_FRAMES = args.num_frames
-    
+    config.DATA.SEED = args.seed  # Add seed to config for reproducibility
+
+    # Add augmentation parameters to config
+    config.DATA.AUGMENT = args.augment
+    config.DATA.MAX_AUG_ROUNDS = args.max_aug_rounds
+    config.DATA.AUG_STEP_SIZE = args.aug_step_size
+
+    # Create sampling indices directory
+    sampling_csv_dir = os.path.join(args.log_dir, 'sampling_indices')
+    os.makedirs(sampling_csv_dir, exist_ok=True)
+
     # Create datasets and dataloaders
     logger.info("Creating datasets...")
     try:
+        # Initialize with sampling tracker and augmentation support
         train_dataset = UCF101(cfg=config, mode="train", num_retries=10)
+        if hasattr(train_dataset, 'init_sampler'):
+            train_dataset.init_sampler(
+                sampling_csv_dir, 
+                logger, 
+                "ucf101", 
+                "train", 
+                args.train_sampling,
+                augment=args.augment,
+                max_aug_rounds=args.max_aug_rounds,
+                aug_step_size=args.aug_step_size
+            )
         logger.info(f"Created train dataset with {len(train_dataset)} samples")
         
+        # For validation dataset (no augmentation)
         val_dataset = UCF101(cfg=config, mode="val", num_retries=10)
+        if hasattr(val_dataset, 'init_sampler'):
+            val_dataset.init_sampler(sampling_csv_dir, logger, "ucf101", "val", args.val_sampling)
         logger.info(f"Created val dataset with {len(val_dataset)} samples")
         
         # Create test dataset (using validation split if no separate test split exists)
         try:
             test_dataset = UCF101(cfg=config, mode="test", num_retries=10)
+            if hasattr(test_dataset, 'init_sampler'):
+                test_dataset.init_sampler(sampling_csv_dir, logger, "ucf101", "test", args.test_sampling)
             logger.info(f"Created test dataset with {len(test_dataset)} samples")
         except Exception as e:
             logger.info(f"No separate test dataset found: {str(e)}")
@@ -338,6 +383,12 @@ def main():
         logger.error(f"Error creating datasets: {str(e)}")
         raise
     
+    # Store datasets in a dictionary
+    datasets = {'train': train_dataset, 'val': val_dataset, 'test': test_dataset}
+    
+    # Save initial sampling indices
+    save_all_sampling_indices(datasets, args.log_dir)
+
     # Create model
     logger.info(f"Creating foundation model ({args.arch})...")
     try:
@@ -785,6 +836,9 @@ def main():
     # Close WandB
     if args.use_wandb and utils.is_main_process():
         wandb.finish()
+    
+    # Save final sampling indices
+    save_all_sampling_indices(datasets, args.log_dir)
     
     # Test the best model on the test set
     logger.info("Loading best model for evaluation on test set...")

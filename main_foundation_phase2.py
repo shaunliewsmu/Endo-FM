@@ -371,6 +371,14 @@ def parse_args():
     parser.add_argument('--focal_gamma', type=float, default=1.5,
                       help='Gamma parameter for Focal Loss')
     
+    # Data augmentation arguments 
+    parser.add_argument('--augment', action='store_true',
+                      help='Enable data augmentation for feature extraction')
+    parser.add_argument('--max_aug_rounds', type=int, default=None,
+                      help='Maximum number of augmentation rounds (default: auto-calculate based on video length)')
+    parser.add_argument('--aug_step_size', type=int, default=1,
+                      help='Step size for augmentation rounds (e.g., 2 will use rounds 1,3,5... instead of 1,2,3...)')
+    
     # Model arguments
     parser.add_argument('--num_classes', type=int, default=2,
                       help='Number of classes')
@@ -393,6 +401,16 @@ def parse_args():
     parser.add_argument("--opts", help="See utils/defaults.py for all options", default=None, nargs=argparse.REMAINDER)
     
     return parser.parse_args()
+
+def save_all_sampling_indices(datasets, output_dir):
+    """Save sampling indices for all datasets."""
+    for split, dataset in datasets.items():
+        if hasattr(dataset, 'save_sampling_indices'):
+            try:
+                dataset.save_sampling_indices()
+                print(f"Saved sampling indices for {split} dataset")
+            except Exception as e:
+                print(f"Error saving sampling indices for {split} dataset: {str(e)}")
 
 def extract_features(args, logger):
     """Extract features using the foundation model"""
@@ -425,14 +443,39 @@ def extract_features(args, logger):
     config.DATA.VAL_SAMPLING_METHOD = args.sampling_method
     config.DATA.TEST_SAMPLING_METHOD = args.sampling_method
     config.DATA.NUM_FRAMES = args.num_frames
-    
+    config.DATA.SEED = args.seed  # Add seed for reproducibility
+
+    # Add augmentation parameters to config
+    config.DATA.AUGMENT = args.augment
+    config.DATA.MAX_AUG_ROUNDS = args.max_aug_rounds
+    config.DATA.AUG_STEP_SIZE = args.aug_step_size
+
+    # Create sampling indices directory
+    sampling_csv_dir = os.path.join(args.log_dir, 'sampling_indices')
+    os.makedirs(sampling_csv_dir, exist_ok=True)
+
     # Create datasets and dataloaders
     logger.info(f"Creating datasets with {args.sampling_method} sampling method and {args.num_frames} frames")
     try:
+        # Initialize with sampling tracker and augmentation support for training
         train_dataset = UCF101(cfg=config, mode="train", num_retries=10)
+        if hasattr(train_dataset, 'init_sampler'):
+            train_dataset.init_sampler(
+                sampling_csv_dir, 
+                logger, 
+                "ucf101", 
+                "train", 
+                args.sampling_method,
+                augment=args.augment,
+                max_aug_rounds=args.max_aug_rounds,
+                aug_step_size=args.aug_step_size
+            )
         logger.info(f"Created train dataset with {len(train_dataset)} samples")
         
+        # For validation dataset (no augmentation)
         val_dataset = UCF101(cfg=config, mode="val", num_retries=10)
+        if hasattr(val_dataset, 'init_sampler'):
+            val_dataset.init_sampler(sampling_csv_dir, logger, "ucf101", "val", args.sampling_method)
         logger.info(f"Created val dataset with {len(val_dataset)} samples")
         
         # Try to create test dataset (fallback to val if not available)
@@ -587,6 +630,10 @@ def extract_features(args, logger):
     # Extract features for test set
     logger.info("Extracting features for test set...")
     extract_split_features(model, test_loader, test_dir, "test", logger, args.num_frames)
+    
+    # Save sampling indices after extraction
+    datasets = {'train': train_dataset, 'val': val_dataset, 'test': test_dataset}
+    save_all_sampling_indices(datasets, args.log_dir)
     
     logger.info("Feature extraction completed")
 
