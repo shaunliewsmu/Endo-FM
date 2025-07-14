@@ -28,7 +28,15 @@ MANIFEST
 checkpoints/endo_fm.pth
 checkpoints/kinetics400_vitb_ssl.pth
 checkpoints/polypdiag.pth
+checkpoints/endo*
+checkpoints/eval/
+checkpoints/new-endo*
 data/downstream/
+wandb/
+logs/
+models/foundation_phase1/
+models/foundation_phase2/
+features/
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
