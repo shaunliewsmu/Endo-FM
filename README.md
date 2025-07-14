@@ -255,6 +255,7 @@ bash scripts/train_aug_8frames.sh
 - `--num_labels`: Number of classification labels (default: 2)
 - `--num_frames`: Number of frames to sample (default: 8, optimized for Endo-FM)
 
+### Sampling Methods and Data Augmentation Theory
 you can find more details about the theory used for sampling methods and data augmentation from [here](https://github.com/mhleerepo/ai-laryngeal-video-based-classifier/blob/main/README_Techniques_Explaination.md)
 
 ### Sampling Methods
