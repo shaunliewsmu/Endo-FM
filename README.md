@@ -1,271 +1,344 @@
-# Foundation Model for Endoscopy Video Analysis
-<!-- select Model and/or Data and/or Code as needed>
-### Welcome to OpenMEDLab! 👋
+# Endo-FM Video Classifier
 
-<!--
-**Here are some ideas to get you started:**
-🙋‍♀️ A short introduction - what is your organization all about?
-🌈 Contribution guidelines - how can the community get involved?
-👩‍💻 Useful resources - where can the community find your docs? Is there anything else the community should know?
-🍿 Fun facts - what does your team eat for breakfast?
-🧙 Remember, you can do mighty things with the power of [Markdown](https://docs.github.com/github/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax)
--->
+This is an Endo-FM (Endoscopy Foundation Model) implementation for laryngeal cancer screening that utilizes pre-trained foundation models for fine-tuning on downstream video classification tasks. Endo-FM is implemented in a **separate repository** and uses a distributed training framework optimized for medical endoscopy videos.
 
+## Project Overview
 
-<!-- Insert the project banner here -->
+This Endo-FM implementation offers:
+- **Foundation model approach**: Leverages pre-trained Endo-FM models for downstream fine-tuning
+- **Medical video specialization**: Specifically designed for endoscopy video understanding
+- **Distributed training**: Multi-GPU support with PyTorch distributed training
+- **Comprehensive visualization**: Automatic sampling indices, confusion matrices, and training dashboards
+- **Reproducible training**: Fixed seed (42) for consistent results across runs
 
-[//]: # (<div align="center">)
+## Repository Setup
 
-[//]: # (    <a href="https://"><img width="1000px" height="auto" src="https://github.com/openmedlab/sampleProject/blob/main/banner_sample.png"></a>)
+### Installation
 
-[//]: # (</div>)
-
-[//]: # (---)
-
-<!-- Select some of the point info, feel free to delete -->
-
-[//]: # ([![Twitter]&#40;https://img.shields.io/twitter/url?style=social&url=https%3A%2F%2Ftwitter.com%2Fopendilab&#41;]&#40;https://twitter.com/opendilab&#41;)
-
-[//]: # ([![PyPI]&#40;https://img.shields.io/pypi/v/DI-engine&#41;]&#40;https://pypi.org/project/DI-engine/&#41;)
-
-[//]: # (![Conda]&#40;https://anaconda.org/opendilab/di-engine/badges/version.svg&#41;)
-
-[//]: # (![Conda update]&#40;https://anaconda.org/opendilab/di-engine/badges/latest_release_date.svg&#41;)
-
-[//]: # (![PyPI - Python Version]&#40;https://img.shields.io/pypi/pyversions/DI-engine&#41;)
-
-[//]: # (![PyTorch Version]&#40;https://img.shields.io/badge/dynamic/json?color=blue&label=pytorch&query=%24.pytorchVersion&url=https%3A%2F%2Fgist.githubusercontent.com/PaParaZz1/54c5c44eeb94734e276b2ed5770eba8d/raw/85b94a54933a9369f8843cc2cea3546152a75661/badges.json&#41;)
-
-[//]: # ()
-[//]: # ()
-[//]: # (![Loc]&#40;https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/HansBug/3690cccd811e4c5f771075c2f785c7bb/raw/loc.json&#41;)
-
-[//]: # (![Comments]&#40;https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/HansBug/3690cccd811e4c5f771075c2f785c7bb/raw/comments.json&#41;)
-
-[//]: # ()
-[//]: # (![Style]&#40;https://github.com/opendilab/DI-engine/actions/workflows/style.yml/badge.svg&#41;)
-
-[//]: # (![Docs]&#40;https://github.com/opendilab/DI-engine/actions/workflows/doc.yml/badge.svg&#41;)
-
-[//]: # (![Unittest]&#40;https://github.com/opendilab/DI-engine/actions/workflows/unit_test.yml/badge.svg&#41;)
-
-[//]: # (![Algotest]&#40;https://github.com/opendilab/DI-engine/actions/workflows/algo_test.yml/badge.svg&#41;)
-
-[//]: # (![deploy]&#40;https://github.com/opendilab/DI-engine/actions/workflows/deploy.yml/badge.svg&#41;)
-
-[//]: # ([![codecov]&#40;https://codecov.io/gh/opendilab/DI-engine/branch/main/graph/badge.svg?token=B0Q15JI301&#41;]&#40;https://codecov.io/gh/opendilab/DI-engine&#41;)
-
-[//]: # ()
-[//]: # (![GitHub Org's stars]&#40;https://img.shields.io/github/stars/opendilab&#41;)
-
-[//]: # ([![GitHub stars]&#40;https://img.shields.io/github/stars/opendilab/DI-engine&#41;]&#40;https://github.com/Med-AIR/Endo-FM/stargazers&#41;)
-
-[//]: # ([![GitHub forks]&#40;https://img.shields.io/github/forks/opendilab/DI-engine&#41;]&#40;https://github.com/Med-AIR/Endo-FM/network&#41;)
-
-[//]: # (![GitHub commit activity]&#40;https://img.shields.io/github/commit-activity/m/opendilab/DI-engine&#41;)
-
-[//]: # ([![GitHub issues]&#40;https://img.shields.io/github/issues/opendilab/DI-engine&#41;]&#40;https://github.com/opendilab/DI-engine/issues&#41;)
-
-[//]: # ([![GitHub pulls]&#40;https://img.shields.io/github/issues-pr/opendilab/DI-engine&#41;]&#40;https://github.com/opendilab/DI-engine/pulls&#41;)
-
-[//]: # ([![Contributors]&#40;https://img.shields.io/github/contributors/opendilab/DI-engine&#41;]&#40;https://github.com/opendilab/DI-engine/graphs/contributors&#41;)
-
-[//]: # ([![GitHub license]&#40;https://img.shields.io/github/license/opendilab/DI-engine&#41;]&#40;https://github.com/Med-AIR/Endo-FM/blob/master/LICENSE&#41;)
-
-[//]: # (Updated on 2023.06.09)
-
-
-
-This repository provides the official PyTorch implementation of the paper [**Foundation Model for Endoscopy Video Analysis via Large-scale Self-supervised Pre-train**](https://arxiv.org/abs/2306.16741)
-by [Zhao Wang](https://kyfafyd.wang)\*, [Chang Liu](https://scholar.google.com/citations?user=q2JSP3kAAAAJ)\*, [Shaoting Zhang](http://www.qingyuan.sjtu.edu.cn/a/Shaoting-Zhang.html)†, and [Qi Dou](http://www.cse.cuhk.edu.hk/~qdou)†.
-
-<div align="center">
-    <a href="https://"><img width="800px" height="auto" src="assets/framework.png"></a>
-</div>
-
-## Key Features
-
-
-[//]: # (key feature bulletin points here)
-- First foundation model for endoscopy video analysis.
-- A large-scale endoscopic video dataset with over 33K video clips.
-- Support 3 types of downstream tasks, including classification, segmentation, and detection.
-
-## Links
-
-- [Paper](https://arxiv.org/abs/2306.16741)
-- [Model](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EZh5mWE5CL1BpaJ1bXuokfYBDM2VaMknqG7YpaQBRgAvdQ?e=e2rVYW)
-- [OpenMEDLab Page](https://github.com/openmedlab/Endo-FM) 
-<!-- [Code] may link to your project at your institute>
-
-
-<!-- give a introduction of your project -->
-
-## Details
-
-> Foundation models have exhibited remarkable success in various applications, such as disease diagnosis and text report generation. To date, a foundation model for endoscopic video analysis is still lacking. In this paper, we propose Endo-FM, a foundation model specifically developed using massive endoscopic video data. First, we build a video transformer, which captures both local and global long-range dependencies across spatial and temporal dimensions. Second, we pre-train our transformer model using global and local views via a self-supervised manner, aiming to make it robust to spatial-temporal variations and discriminative across different scenes. To develop the foundation model, we construct a large-scale endoscopy video dataset by combining 9 publicly available datasets and a privately collected dataset from Baoshan Branch of Renji Hospital in Shanghai, China. Our dataset overall consists of over 33K video clips with up to 5 million frames, encompassing various protocols, target organs, and disease types. Our pre-trained Endo-FM can be easily adopted for a given downtream task via fine-tuning by serving as the backbone. With experiments on 3 different types of downstream tasks, including classification, segmentation, and detection, our Endo-FM surpasses the current state-of-the-art self-supervised pre-training and adapter-based transfer learning methods by a significant margin.
-
-<!-- Insert a pipeline of your algorithm here if got one -->
-
-
-[//]: # (More intro text here.)
-
-
-## Datasets
-
-<div align="center">
-    <a href="https://"><img width="800px" height="auto" src="assets/dataset_details.png"></a>
-</div>
-
-<div align="center">
-    <a href="https://"><img width="800px" height="auto" src="assets/dataset_visualization.png"></a>
-</div>
-
-We utilize 6 public and 1 private datasets for pre-training and 3 datasets as the downstream tasks.
-Except for SUN & SUN-SEG, we provide our preprocessed data for pre-training and downstream tasks.
-
-#### Pre-training Data (6 public + 1 private) 
-- Colonoscopic [[original paper]](https://ieeexplore.ieee.org/abstract/document/7442848) [[original dataset]](http://www.depeca.uah.es/colonoscopy_dataset/)  [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/ES_hCHb2XWFJgsK4hrKUnNUBx3fl6QI3yyk9ImP4AkkRVw?e=LC4DU5)
-- SUN & SUN-SEG [[original paper1]](https://www.sciencedirect.com/science/article/pii/S0016510720346551) [[original paper2]](https://link.springer.com/article/10.1007/s11633-022-1371-y) [[original dataset1]](http://amed8k.sundatabase.org/) [[original dataset2]](https://github.com/GewelsJI/VPS/blob/main/docs/DATA_PREPARATION.md)
-- LPPolypVideo [[original paper]](https://link.springer.com/chapter/10.1007/978-3-030-87240-3_37) [[original dataset]](https://github.com/dashishi/LDPolypVideo-Benchmark) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/ERTYntGNWfZKj8FVjzsK0QEB6W6KoiuiP89Y3on1PJBAmg?e=P24jjG)
-- Hyper-Kvasir [[original paper]](https://www.nature.com/articles/s41597-020-00622-y) [[original dataset]](https://datasets.simula.no/hyper-kvasir/) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EeHnnUmGbmBGlw7UlNVvw2wBzBMzKi8Sus5LrdwrQi-XUA?e=gWr5qH)
-- Kvasir-Capsule [[original paper]](https://www.nature.com/articles/s41597-021-00920-z) [[original dataset]](https://datasets.simula.no/kvasir-capsule/) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EQhyk3_yz5pAtdpKVFU93S0BfPfTNpblPFXTHaW-BIjV-Q?e=9duP5z)
-- CholecTriplet [[original paper]](https://www.sciencedirect.com/science/article/pii/S1361841522000846) [[original dataset]](https://cholectriplet2021.grand-challenge.org/) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/Ea6g5KpHaJNLvYFqoZpHeroBS801guoB16X18F4GfEG4pw?e=SWHoyQ)
-- Our Private [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EZ2Vs0zU-L1Go8RITgs42b4BjlWy6UtGXh6AHmBGD_gGFw?e=SRiD7m)
-
-#### Downstream Data (3 public)
-- PolypDiag [[original paper]](https://link.springer.com/chapter/10.1007/978-3-031-16437-8_9) [[original dataset]](https://github.com/tianyu0207/weakly-polyp) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/Ed_RCZ86IktKkGNNL5qX9IsBvNa7wcyM8q4yBQBkzaBj8g?e=pvuZVt)
-- CVC-12k [[original paper]](https://www.sciencedirect.com/science/article/pii/S0895611115000567) [[original dataset]](https://polyp.grand-challenge.org/Databases/) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EQzj78YsrVZAtbNVHW7WPEEBX1AeolLI7gmBkg-iEg1lQg?e=0gQPzy)
-- KUMC [[original paper]](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0255809) [[original dataset]](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/FCBUOR) [[our preprocessed dataset]](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EQHKl1-MgA5Ams_sQ4_ssg8BFyd66qucAxUTEHz4lHxE7g?e=fFtXzd)
-
-
-For SUN & SUN-SEG, you need first request the original videos following [this instruction](https://github.com/GewelsJI/VPS/blob/main/docs/DATA_PREPARATION.md).
-Then, you can transfer the data for pre-training videos by the following:
 ```bash
-cd Endo-FM/data
-python sun.py
-python sun_seg.py
-python trans_videos_pretrain.py
-```
-Finally, generating the video list `pretrain/train.csv` for pre-training by the following:
-```bash
-cd Endo-FM/data
-python gencsv.py
-```
-
-
-## Get Started
-
-#### Main Requirements
-- torch==1.8.0
-- torchvision==0.9.0
-- pillow==6.2.2
-- timm==0.4.12
-
-#### Installation
-We suggest using Anaconda to setup environment on Linux, if you have installed anaconda, you can skip this step.
-
-```shell
-wget https://repo.anaconda.com/archive/Anaconda3-2020.11-Linux-x86_64.sh && zsh Anaconda3-2020.11-Linux-x86_64.sh
-```
-
-Then, we can install packages using provided `environment.yaml`.
-
-```shell
+git clone https://github.com/mhleerepo/Endo-FM.git  
 cd Endo-FM
 conda env create -f environment.yaml
 conda activate endofm
 ```
 
-#### Pre-trained Weights
-You can directly download our pre-trained Endo-FM via this [link](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EZh5mWE5CL1BpaJ1bXuokfYBDM2VaMknqG7YpaQBRgAvdQ?e=e2rVYW) and put it under `checkpoints/` for downstream fine-tuning.
+> **Note**: If running on mercury server, the conda environment already exists. Simply run:
+> ```bash
+> conda activate endofm
+> ```
 
-#### Downstream Fine-tuned Weights
-Also, we provide the pre-trained weights of 3 downstream tasks for direct downstream testing.
+### Dataset Installation
 
-|    Dataset    | PolypDiag | CVC-12k | KUMC | 
-|:--------------:|:----:|:----:|:-----:|
-|    Our Paper   | 90.7 | 73.9 | 84.1 |
-| Released Model | 91.5 | 76.6 | 84.0 |
-| Weights | [link](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/ERSlUP10MGpBuhg1uN5iaHABKqz1SPQSrr03j4sEWey-bw?e=muv8RL) | [link](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EePnpTllUCFEqpYp6BFPv0sBQyST4CV4jQ8pvaRynCkD7Q?e=f7LeBx) | [link](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EYPkwbFyMfxEirezWtumAGIBSCTQ0EvDN4u99KKiRsaVBA?e=DsrkVG) |
+All preprocessed datasets are available on the mercury server. Copy the datasets to your cloned repository:
 
-<!-- [//]: # (#### Preprocess) -->
+#### Available Datasets
+1. **Balanced (Duke + BAGLS) Dataset** (`data/downstream/balanced-dataset`)
+2. **BAGLS Dataset** (`data/downstream/bagls-split:v0`)
+3. **Duke Dataset** (`data/downstream/duhs-gss-split-5:v0`)
+4. **PolypDiag Dataset** (`data/downstream/PolypDiag`) - Default dataset provided by Endo-FM
 
+#### Copy Commands
 
-#### Pre-training
-```shell
-cd Endo-FM
-wget -P checkpoints/ https://github.com/kahnchana/svt/releases/download/v1.0/kinetics400_vitb_ssl.pth
-bash scripts/train_clips32k.sh
+SSH into the mercury server and navigate to `/mnt/storage/shaun/Endo-FM/data/downstream`, then copy:
+
+```bash
+# Copy downstream data folder
+rsync -av /mnt/storage/shaun/Endo-FM/data/downstream/ /path/to/destination/Endo-FM/data/downstream/
+# OR
+cp -r /mnt/storage/shaun/Endo-FM/data/downstream/ /path/to/destination/Endo-FM/data/downstream/
 ```
 
-#### Downstream Fine-tuning
-```shell
-# PolypDiag (Classification)
-cd Endo-FM
-bash scripts/eval_finetune_polypdiag.sh
+#### Pre-trained Model Download
 
-# CVC (Segmentation)
-cd Endo-FM/TransUNet
-python train.py
+Download the pre-trained Endo-FM model from [here](https://mycuhk-my.sharepoint.com/:u:/g/personal/1155167044_link_cuhk_edu_hk/EZh5mWE5CL1BpaJ1bXuokfYBDM2VaMknqG7YpaQBRgAvdQ?e=e2rVYW) and place it under `checkpoints/`:
+- Model file: `endo_fm.pth`
+- Location: `checkpoints/endo_fm.pth`
 
-# KUMC (Detection)
-cd Endo-FM/STMT
-python setup.py build develop
-python -m torch.distributed.launch \
-    --nproc_per_node=1 \
-    tools/train_net.py \
-    --master_port=$((RANDOM + 10000)) \
-    --config-file configs/STFT/kumc_R_50_STFT.yaml \
-    OUTPUT_DIR log_dir/kumc_finetune
+## Project Structure
+
+```
+Endo-FM/
+├── README.md                                      # Project documentation
+├── environment.yaml                               # Conda environment configuration
+├── custom_visualize.py                            # Custom visualization script
+├── generate_csv.py                                # CSV generation utility
+├── visualize_csv.py                               # CSV visualization script
+├── checkpoints/                                   # Training outputs and checkpoints
+│   ├── endo_fm.pth                               # Pre-trained Endo-FM model
+│   ├── augmented-new-bagls-balanced-random-focal-1-05-training-8/
+│   │   ├── best_confusion_matrix_epoch_0.png
+│   │   ├── checkpoint.pth.tar                    # Trained model checkpoint
+│   │   ├── config.json                           # Configuration used for training
+│   │   ├── training.log                          # Training logs
+│   │   ├── sampling_indices/                     # Sampling index files (CSV)
+│   │   │   ├── sampling_indices_ucf101_random_window_train_augstep16.csv
+│   │   │   └── sampling_indices_ucf101_random_window_val.csv
+│   │   └── sampling_dashboard/                   # Sampling dashboard visualizations
+│   └── ...                                       # Additional training folders
+├── data/                                          # Data storage
+│   └── downstream/
+│       ├── bagls-split:v0/                       # BAGLS dataset
+│       ├── balanced-dataset/                     # Balanced Duke + BAGLS dataset
+│       ├── duhs-gss-split-5:v0/                  # Duke dataset
+│       └── PolypDiag/                            # PolypDiag dataset
+├── datasets/                                      # Dataset handling scripts
+│   └── ...                                       # Various dataset utilities
+├── scripts/                                       # Training scripts
+│   ├── train_8frames.sh                          # Main training script with 8 frames
+│   ├── train_aug_8frames.sh                      # Augmented training script with 8 frames
+│   ├── train.sh                                  # Original training script (32 frames)
+│   ├── train_aug.sh                              # Original augmented training script (32 frames)
+│   └── ...                                       # Additional utility scripts
+├── utils/                                         # Utility functions and helpers
+│   ├── datasets_patch.py                         # Dataset integration patch
+│   ├── sampling_dashboard.py                     # Sampling visualization dashboard
+│   ├── visualize_sampling.py                     # Sampling visualization utility
+│   └── ...                                       # Various utility scripts
+├── main_foundation_phase1.py                      # Foundation model training script phase 1
+├── main_foundation_phase2.py                      # Foundation model training script phase 2
+├── eval_finetune_new.py                           # Main evaluation and fine-tuning script
+└── ...                                            # Additional configuration files
 ```
 
-#### Direct Downstream Testing
-```shell
-# PolypDiag (Classification)
-cd Endo-FM
-bash scripts/test_finetune_polypdiag.sh
+## Training Output Structure
 
-# CVC (Segmentation)
-cd Endo-FM/TransUNet
-python train.py --test
+Each training run creates a directory under `checkpoints/`:
 
-# KUMC (Detection)
-cd Endo-FM/STMT
-python setup.py build develop
-python -m torch.distributed.launch \
-    --nproc_per_node=1 \
-    tools/test_net.py \
-    --master_port=$((RANDOM + 10000)) \
-    --config-file configs/STFT/kumc_R_50_STFT.yaml \
-    MODEL.WEIGHT kumc.pth \
-    OUTPUT_DIR log_dir/kumc_finetune
+```
+[EXP_NAME]/
+├── best_confusion_matrix_epoch_0.png              # Best confusion matrix visualization
+├── best_confusion_matrix_epoch_1.png              # Confusion matrices for each epoch
+├── checkpoint.pth.tar                            # Model checkpoint
+├── config.json                                   # Configuration used for the run
+├── log.txt                                       # Training log file
+├── training.log                                  # Detailed training logs
+├── sampling_indices/                             # Sampling index files (CSV)
+│   ├── sampling_indices_ucf101_[method]_train.csv
+│   ├── sampling_indices_ucf101_[method]_train_augstep16.csv
+│   └── sampling_indices_ucf101_[method]_val.csv
+└── sampling_dashboard/                           # Sampling dashboard visualizations
 ```
 
-## 🙋‍♀️ Feedback and Contact
+## Training Methods
 
-For further questions, pls feel free to contact [Zhao Wang](mailto:zwang21@cse.cuhk.edu.hk).
+We have **4 training methods** available for Endo-FM:
 
+### 1. Without Data Augmentation and Without Fine Tune
 
-## 🛡️ License
+Direct training on balanced dataset using the pre-trained Endo-FM model.
 
-This project is under the Apache License 2.0 license. See [LICENSE](LICENSE) for details.
+**Script Location**: `scripts/train_8frames.sh`
 
-## 🙏 Acknowledgement
+**Key Variables to Configure**:
+```bash
+EXP_NAME="new-endo-fm-balanced-fine-tune-random-focal-1-05-training-8"
+DATASET="ucf101"                                  # Must remain "ucf101"
+DATA_PATH="data/downstream/balanced-dataset"     # Dataset path
+CHECKPOINT="checkpoints/endo_fm.pth"             # Pre-trained model
 
-Our code is based on [DINO](https://github.com/facebookresearch/dino), [TimeSformer](https://github.com/facebookresearch/TimeSformer), [SVT](https://github.com/kahnchana/svt), [TransUNet](https://github.com/Beckschen/TransUNet), and [STFT](https://github.com/lingyunwu14/STFT). Thanks them for releasing their codes.
-
-## 📝 Citation
-
-If you find this code useful, please cite in your research papers.
+# Training Parameters
+--epochs 30                                       # Number of epochs
+--train_sampling "random"                        # Sampling method: random, random_window, uniform
+--val_sampling "random"                          # Validation sampling
+--test_sampling "random"                         # Test sampling
+--num_frames 8                                   # Number of frames (optimized for Endo-FM)
+--focal_gamma 1                                  # Focal loss gamma
+--focal_alpha 0.5                                # Focal loss alpha
 ```
-@inproceedings{
-    wang2023foundation,
-    title={Foundation Model for Endoscopy Video Analysis via Large-scale Self-supervised Pre-train},
-    author={Zhao Wang and Chang Liu and Shaoting Zhang and Qi Dou},
-    booktitle={International Conference on Medical Image Computing and Computer-Assisted Intervention},
-    pages={101--111},
-    year={2023},
-    organization={Springer}
-}
+
+**Command to Run**:
+```bash
+bash scripts/train_8frames.sh
 ```
+
+### 2. Without Data Augmentation and With Fine Tune
+
+Two-stage training: first train on BAGLS dataset, then fine-tune on balanced dataset.
+
+#### First Training (BAGLS Dataset):
+
+**Configure `scripts/train_8frames.sh`**:
+```bash
+EXP_NAME="endo-fm-bagls-first-training"
+DATA_PATH="data/downstream/bagls-split:v0"
+CHECKPOINT="checkpoints/endo_fm.pth"
+```
+
+**Command to Run**:
+```bash
+bash scripts/train_8frames.sh
+```
+
+#### Second Training (Fine-tuning on Balanced Dataset):
+
+**Configure `scripts/train_8frames.sh`**:
+```bash
+EXP_NAME="endo-fm-balanced-fine-tune"
+DATA_PATH="data/downstream/balanced-dataset"
+CHECKPOINT="checkpoints/endo-fm-bagls-first-training/checkpoint.pth.tar"  # From first training
+```
+
+**Command to Run**:
+```bash
+bash scripts/train_8frames.sh
+```
+
+> **Important**: Update the `CHECKPOINT` path to point to the checkpoint generated from the first training.
+
+### 3. With Data Augmentation and Without Fine Tune
+
+Direct training on balanced dataset with data augmentation enabled.
+
+**Script Location**: `scripts/train_aug_8frames.sh`
+
+**Key Variables to Configure**:
+```bash
+EXP_NAME="augmented-endo-fm-balanced-training"
+DATASET="ucf101"
+DATA_PATH="data/downstream/balanced-dataset"
+CHECKPOINT="checkpoints/endo_fm.pth"
+
+# Augmentation Parameters
+--augment                                         # Enable data augmentation
+--aug_step_size 16                               # Optimal augmentation step size
+--scratch                                        # Training from scratch flag
+```
+
+**Command to Run**:
+```bash
+bash scripts/train_aug_8frames.sh
+```
+
+### 4. With Data Augmentation and With Fine Tune
+
+Two-stage training with data augmentation in both stages.
+
+#### First Training (BAGLS Dataset with Augmentation):
+
+**Configure `scripts/train_aug_8frames.sh`**:
+```bash
+EXP_NAME="augmented-endo-fm-bagls-first"
+DATA_PATH="data/downstream/bagls-split:v0"
+CHECKPOINT="checkpoints/endo_fm.pth"
+--augment
+--aug_step_size 16
+```
+
+**Command to Run**:
+```bash
+bash scripts/train_aug_8frames.sh
+```
+
+#### Second Training (Fine-tuning with Augmentation):
+
+**Configure `scripts/train_aug_8frames.sh`**:
+```bash
+EXP_NAME="augmented-endo-fm-balanced-fine-tune"
+DATA_PATH="data/downstream/balanced-dataset"
+CHECKPOINT="checkpoints/augmented-endo-fm-bagls-first/checkpoint.pth.tar"  # From first training
+--augment
+--aug_step_size 16
+```
+
+**Command to Run**:
+```bash
+bash scripts/train_aug_8frames.sh
+```
+
+## Parameter Customization
+
+### Core Training Parameters
+- `--epochs`: Number of training epochs (default: 30)
+- `--lr`: Learning rate (default: 0.001)
+- `--batch_size_per_gpu`: Batch size per GPU (default: 2)
+- `--num_workers`: Number of data loading workers (default: 2)
+- `--num_labels`: Number of classification labels (default: 2)
+- `--num_frames`: Number of frames to sample (default: 8, optimized for Endo-FM)
+
+you can find more details about the theory used for sampling methods and data augmentation from [here](https://github.com/mhleerepo/ai-laryngeal-video-based-classifier/blob/main/README_Techniques_Explaination.md)
+
+### Sampling Methods
+Available sampling methods for `--train_sampling`, `--val_sampling`, and `--test_sampling`:
+- **random**: Randomly sample frames
+- **random_window**: Random sampling within windows
+- **uniform**: Uniformly sample frames across video
+
+### Loss Function Parameters
+- `--loss_function`: Loss function type (default: "focal_loss")
+- `--focal_gamma`: Focal loss gamma parameter (default: 1)
+- `--focal_alpha`: Focal loss alpha parameter (default: 0.5)
+
+### Data Augmentation Parameters
+- `--augment`: Enable data augmentation
+- `--aug_step_size`: Control augmentation rounds (optimal: 16)
+- `--scratch`: Training from scratch flag (used with augmentation)
+
+### Model Architecture Parameters
+- `--arch`: Model architecture (default: "vit_base")
+- `--n_last_blocks`: Number of last blocks to fine-tune (default: 1)
+
+### Reproducibility Parameters
+- `--seed`: Random seed for reproducible results (default: 42)
+
+### Dataset Configuration
+- `DATA.PATH_TO_DATA_DIR`: Path to data directory splits
+- `DATA.PATH_PREFIX`: Path to video files
+- `DATA.USE_FLOW`: Use optical flow (default: False)
+
+## Model Features
+
+### Endo-FM Architecture Advantages
+- **Foundation Model Approach**: Leverages pre-trained models specialized for endoscopy
+- **Medical Video Understanding**: Optimized for medical endoscopy video classification
+- **Vision Transformer Backbone**: Uses ViT-Base architecture for robust feature extraction
+- **Transfer Learning**: Effective knowledge transfer from pre-trained Endo-FM to downstream tasks
+- **Efficient Training**: 8-frame sampling optimized for the pre-trained model
+
+### Training Framework Features
+- **Distributed Training**: PyTorch distributed training with automatic port assignment
+- **Automatic Visualization**: Generated sampling indices, confusion matrices, and dashboards
+- **Reproducible Results**: Fixed seed (42) ensures consistent training outcomes
+- **Comprehensive Logging**: Detailed training logs and configuration tracking
+- **Dataset Integration**: Automatic dataset patching for proper integration
+
+## Important Notes
+
+### Environment Requirements
+- **Conda Environment**: Uses conda instead of pip for package management
+- **Python Distributed**: Requires PyTorch distributed training setup
+- **GPU Requirements**: Optimized for single-GPU training (`--nproc_per_node=1`)
+
+### Dataset Requirements
+- **Fixed Dataset Name**: `DATASET` must remain "ucf101" for compatibility
+- **Directory Structure**: Requires specific `splits/` and `videos/` subdirectories
+- **Frame Count**: Optimized for 8 frames instead of 32 (pre-trained model requirement)
+
+### Checkpoint Management
+- **Pre-trained Model**: Must download and place `endo_fm.pth` in `checkpoints/`
+- **Fine-tuning Checkpoints**: Use `checkpoint.pth.tar` from previous training runs
+- **Experiment Naming**: Use descriptive `EXP_NAME` for easy identification of training runs
+
+### Visualization Features
+- **Automatic Generation**: Confusion matrices, sampling indices, and dashboards created automatically
+- **CSV Tracking**: Detailed sampling indices saved as CSV files for analysis
+- **Dashboard Creation**: Interactive sampling visualization dashboards
+- **Frame Visualization**: Sample frame visualizations for understanding model behavior
+
+### Training Process
+- **Dataset Patching**: Automatic application of dataset patches before training
+- **Port Assignment**: Random port assignment for distributed training
+- **Success Verification**: Automatic success checking and visualization triggering
+- **Log Management**: Comprehensive logging with training progress and metrics
+
+### Best Practices
+- **Experiment Naming**: Use descriptive names for `EXP_NAME` to organize training runs
+- **Checkpoint Paths**: Always verify correct checkpoint paths when fine-tuning
+- **Resource Management**: Monitor GPU memory usage with 8-frame processing
+- **Augmentation Control**: Use `aug_step_size=16` as the optimal setting for computational efficiency
+- **Reproducibility**: Keep `--seed 42` for consistent results across experiments
+
+### Training Results Location
+All training results are automatically saved to:
+`checkpoints/[EXP_NAME]/`
+
+Each run creates a complete training environment with checkpoints, logs, visualizations, and sampling analysis.
