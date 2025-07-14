@@ -3,9 +3,9 @@
 # Script for training with custom sampling, focal loss, and data augmentation - with fixed seed for reproducibility
 EXP_NAME="augmented_new-new-bagls-fine-tune-balanced-uniform-focal-1-05-training-8"
 DATASET="ucf101"
-# DATA_PATH="data/downstream/balanced-dataset"
-DATA_PATH="data/downstream/bagls-split:v0"
-# CHECKPOINT="checkpoints/augmented-new-bagls-balanced-uniform-focal-1-05-training-8/checkpoint.pth.tar"
+DATA_PATH="data/downstream/balanced-dataset"
+# DATA_PATH="data/downstream/bagls-split:v0"
+CHECKPOINT="checkpoints/augmented-new-bagls-balanced-uniform-focal-1-05-training-8/checkpoint.pth.tar"
 CHECKPOINT="checkpoints/endo_fm.pth"
 if [ ! -d "checkpoints/$EXP_NAME" ]; then
   mkdir -p "checkpoints/$EXP_NAME"
